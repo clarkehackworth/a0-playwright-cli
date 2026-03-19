@@ -224,7 +224,7 @@ class PlaywrightCliBackend:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._make_env(),
-            cwd=os.path.expanduser("~"),  # playwright-cli reads .playwright/cli.config.json from CWD
+            cwd="/tmp",  # playwright-cli writes .playwright-cli/ artifacts to cwd — use /tmp to keep project clean
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
