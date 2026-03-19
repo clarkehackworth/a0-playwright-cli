@@ -1,0 +1,24 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# User-specific plugin config (contains personal settings)
+config.json
+
+# Agent Zero internal
+.toggle-1
+
+# Playwright runtime artifacts
+.playwright-cli/
+.playwright/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# BMAD project files
+.a0proj/
+
+# Plugin runtime state
+init_exec.json

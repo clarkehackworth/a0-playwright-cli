@@ -1,0 +1,13 @@
+always_enabled: false
+description: A0 Playwright CLI browser automation plugin for Agent Zero. Gives agents
+  a browser_agent tool to navigate, interact with, and extract data from websites
+  using structured DOM snapshots with stable element references.
+name: a0_playwright_cli
+note: Requires Node.js. Enable the plugin and click Initialize to install playwright-cli
+  and Chromium automatically.
+per_agent_config: false
+per_project_config: false
+settings_sections:
+- agent
+title: A0 Playwright CLI
+version: 1.0.0
