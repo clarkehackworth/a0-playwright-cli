@@ -22,3 +22,7 @@ Thumbs.db
 
 # Plugin runtime state
 init_exec.json
+
+# Node.js dependencies
+node_modules/
+package-lock.json
