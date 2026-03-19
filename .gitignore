@@ -26,3 +26,7 @@ init_exec.json
 # Node.js dependencies
 node_modules/
 package-lock.json
+
+# Test results
+test-results/
+.playwright-cli/
