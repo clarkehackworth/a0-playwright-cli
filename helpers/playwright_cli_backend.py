@@ -670,6 +670,135 @@ class PlaywrightCliBackend:
             except Exception:
                 pass
 
+        elif action == "scroll" or action == "mousewheel":
+            # scroll: value = dy (pixels), ref = optional element to scroll within
+            # e.g. {action: scroll, value: 300}  or  {action: scroll, ref: e5, value: 300}
+            try:
+                dx = int(decision.get("dx", 0))
+                dy = int(decision.get("value") or decision.get("dy") or 100)
+            except (TypeError, ValueError):
+                dy = 100
+                dx = 0
+            await self._run_cmd([f"-s={sid}", "mousewheel", str(dx), str(dy)])
+
+        elif action == "eval":
+            # eval: value = JS expression, ref = optional element ref
+            expr = str(value) if value else "document.title"
+            if ref and _REF_PATTERN.match(str(ref)):
+                await self._run_cmd([f"-s={sid}", "eval", expr, ref])
+            else:
+                await self._run_cmd([f"-s={sid}", "eval", expr])
+
+        elif action == "drag":
+            # drag: ref = source element, value = target element ref
+            target_ref = str(decision.get("target") or value or "")
+            if not ref or not _REF_PATTERN.match(str(ref)):
+                log.warning("PlaywrightCliBackend: drag rejected invalid source ref '%s'", ref)
+                return
+            if not target_ref or not _REF_PATTERN.match(target_ref):
+                log.warning("PlaywrightCliBackend: drag rejected invalid target ref '%s'", target_ref)
+                return
+            await self._run_cmd([f"-s={sid}", "drag", ref, target_ref])
+
+        elif action == "tab-select":
+            # tab-select: value = tab index (0-based integer)
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                log.warning("PlaywrightCliBackend: tab-select requires integer value, got '%s'", value)
+                return
+            await self._run_cmd([f"-s={sid}", "tab-select", str(idx)])
+
+        elif action == "tab-list":
+            # tab-list: returns list of open tabs in stdout (informational, no side effects)
+            await self._run_cmd([f"-s={sid}", "tab-list"])
+
+        elif action == "keydown":
+            # keydown: value = key name (Shift, Control, Alt, Meta, etc.)
+            if not value:
+                log.warning("PlaywrightCliBackend: keydown action missing value")
+                return
+            await self._run_cmd([f"-s={sid}", "keydown", str(value)])
+
+        elif action == "keyup":
+            # keyup: value = key name
+            if not value:
+                log.warning("PlaywrightCliBackend: keyup action missing value")
+                return
+            await self._run_cmd([f"-s={sid}", "keyup", str(value)])
+
+        elif action == "dialog-accept":
+            # dialog-accept: value = optional confirmation text
+            if value:
+                await self._run_cmd([f"-s={sid}", "dialog-accept", str(value)])
+            else:
+                await self._run_cmd([f"-s={sid}", "dialog-accept"])
+
+        elif action == "dialog-dismiss":
+            await self._run_cmd([f"-s={sid}", "dialog-dismiss"])
+
+        elif action == "resize":
+            # resize: value = "width height" or use separate width/height keys
+            try:
+                width = int(decision.get("width") or str(value).split()[0])
+                height = int(decision.get("height") or str(value).split()[1])
+            except (TypeError, ValueError, IndexError):
+                log.warning("PlaywrightCliBackend: resize requires width and height, got '%s'", value)
+                return
+            await self._run_cmd([f"-s={sid}", "resize", str(width), str(height)])
+
+        elif action == "wait":
+            # wait: value = seconds to sleep (max 30 to prevent stalling)
+            try:
+                seconds = min(float(value), 30.0)
+            except (TypeError, ValueError):
+                seconds = 2.0
+            log.debug("PlaywrightCliBackend: wait %.1fs", seconds)
+            await asyncio.sleep(seconds)
+
+        elif action == "mousemove":
+            # mousemove: value = "x y" or use separate x/y keys
+            try:
+                x = int(decision.get("x") or str(value).split()[0])
+                y = int(decision.get("y") or str(value).split()[1])
+            except (TypeError, ValueError, IndexError):
+                log.warning("PlaywrightCliBackend: mousemove requires x and y, got '%s'", value)
+                return
+            await self._run_cmd([f"-s={sid}", "mousemove", str(x), str(y)])
+
+        elif action == "mousedown":
+            # mousedown: value = optional button (left/right/middle, default left)
+            btn = str(value) if value in ("right", "middle") else None
+            if btn:
+                await self._run_cmd([f"-s={sid}", "mousedown", btn])
+            else:
+                await self._run_cmd([f"-s={sid}", "mousedown"])
+
+        elif action == "mouseup":
+            btn = str(value) if value in ("right", "middle") else None
+            if btn:
+                await self._run_cmd([f"-s={sid}", "mouseup", btn])
+            else:
+                await self._run_cmd([f"-s={sid}", "mouseup"])
+
+        elif action == "upload":
+            # upload: ref = file input element ref, value = file path
+            if not ref or not _REF_PATTERN.match(str(ref)):
+                log.warning("PlaywrightCliBackend: upload rejected invalid ref '%s'", ref)
+                return
+            if not value:
+                log.warning("PlaywrightCliBackend: upload requires a file path in value")
+                return
+            await self._run_cmd([f"-s={sid}", "upload", ref, str(value)])
+
+        elif action == "run-code":
+            # run-code: value = inline JS string with signature async page => { ... }
+            # WARNING: inherits prompt injection risk from task string.
+            if not value:
+                log.warning("PlaywrightCliBackend: run-code requires JS expression in value")
+                return
+            await self._run_cmd([f"-s={sid}", "run-code", str(value)])
+
         else:
             log.warning("PlaywrightCliBackend: unknown action '%s' — skipping", action)
 

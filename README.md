@@ -1,6 +1,6 @@
 # A0 Playwright CLI
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Agent Zero](https://img.shields.io/badge/Agent%20Zero-plugin-orange)
+![Version](https://img.shields.io/badge/version-1.2.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Agent Zero](https://img.shields.io/badge/Agent%20Zero-plugin-orange)
 
 Microsoft Playwright CLI browser automation plugin for [Agent Zero](https://github.com/frdel/agent-zero). Gives every agent a `browser_agent` tool to navigate, interact with, and extract data from any website using structured DOM snapshots with stable element references.
 
@@ -11,7 +11,7 @@ Microsoft Playwright CLI browser automation plugin for [Agent Zero](https://gith
 - 🎭 **Playwright CLI backend** — structured YAML DOM snapshots with stable element refs (`e1`, `e2`, ...)
 - 🤖 **Uses Agent Zero Browser Model** — no separate LLM config needed, inherits your Settings → Agent → Browser Model
 - 🔧 **Auto-skill injection** — the full Playwright CLI skill is injected into the agent system prompt automatically
-- 📋 **14 browser actions** — goto, click, fill, type, press, select, check, hover, go-back, reload, tab management, screenshots, and more
+- 📋 **30 browser actions** — navigation, interaction, keyboard & mouse, scroll, eval/JS, drag, dialogs, tabs, viewport, and more
 - 🔒 **Security validated** — URL allowlist (http/https only), element ref pattern validation
 - 📱 **Mobile/device emulation** — emulate any device viewport
 - 🕸️ **Network mocking** — intercept and mock HTTP requests
@@ -98,9 +98,18 @@ PlaywrightCliBackend (helpers/playwright_cli_backend.py)
 
 ## Available Actions
 
+### Navigation
 | Action | Description |
 |--------|-------------|
 | `goto` | Navigate to URL (http/https only) |
+| `go-back` | Navigate back |
+| `go-forward` | Navigate forward |
+| `reload` | Reload page |
+| `wait` | Wait N seconds for dynamic content (max 30) |
+
+### Interaction
+| Action | Description |
+|--------|-------------|
 | `click` | Click element by ref |
 | `dblclick` | Double-click element |
 | `fill` | Clear and fill input field |
@@ -110,14 +119,46 @@ PlaywrightCliBackend (helpers/playwright_cli_backend.py)
 | `check` | Check checkbox |
 | `uncheck` | Uncheck checkbox |
 | `hover` | Hover over element |
-| `go-back` | Navigate back |
-| `go-forward` | Navigate forward |
-| `reload` | Reload page |
+| `drag` | Drag element (`ref`) onto target element (`target`) |
+| `upload` | Upload file to input element |
+
+### Keyboard & Mouse
+| Action | Description |
+|--------|-------------|
+| `keydown` | Hold modifier key (Shift, Control, Alt, Meta) |
+| `keyup` | Release held modifier key |
+| `mousemove` | Move mouse to absolute x/y coordinates |
+| `mousedown` | Press mouse button (default: left) |
+| `mouseup` | Release mouse button (default: left) |
+| `scroll` | Scroll page by dy pixels (positive = down) |
+
+### Page State
+| Action | Description |
+|--------|-------------|
 | `snapshot` | Force fresh DOM snapshot |
 | `screenshot` | Take screenshot |
-| `tab-new` | Open new tab |
+| `eval` | Evaluate JavaScript expression (optionally on element ref) |
+| `run-code` | Run inline JS `async page => { ... }` |
+| `resize` | Resize viewport (`value`: `"width height"`) |
+
+### Dialogs
+| Action | Description |
+|--------|-------------|
+| `dialog-accept` | Accept browser dialog (optional confirmation text) |
+| `dialog-dismiss` | Dismiss browser dialog |
+
+### Tabs
+| Action | Description |
+|--------|-------------|
+| `tab-new` | Open new tab (optional URL) |
 | `tab-close` | Close current tab |
-| `done` | Task complete — return result |
+| `tab-select` | Switch to tab by index (0-based) |
+| `tab-list` | List all open tabs |
+
+### Completion
+| Action | Description |
+|--------|-------------|
+| `done` | Task complete — return full result |
 
 ---
 
@@ -154,7 +195,7 @@ The `browser_agent` tool is available to all agents when the plugin is enabled:
 
 ```
 playwright_cli/
-├── plugin.yaml                          # Plugin manifest (v1.1.0)
+├── plugin.yaml                          # Plugin manifest (v1.2.0)
 ├── initialize.py                        # Auto-installer for playwright-cli + Chromium
 ├── default_config.yaml                  # Minimal config (inherits A0 browser model)
 ├── tools/
@@ -196,6 +237,34 @@ MIT — Copyright (c) 2026 Emichi d.o.o. See [LICENSE](LICENSE) for details.
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-03-25
+
+#### New Actions (+16)
+
+Expanded `PlaywrightCliBackend._execute_action()` from 16 to 32 action branches:
+
+| New Action | Description |
+|-----------|-------------|
+| `scroll` / `mousewheel` | Scroll page by dx/dy pixels |
+| `eval` | Evaluate JavaScript expression, optionally against an element ref |
+| `drag` | Drag source element (`ref`) to target element (`target`) |
+| `tab-select` | Switch to tab by 0-based index |
+| `tab-list` | List all open tabs |
+| `keydown` | Hold modifier key (Shift, Control, Alt, Meta) |
+| `keyup` | Release held modifier key |
+| `dialog-accept` | Accept browser alert/confirm/prompt |
+| `dialog-dismiss` | Dismiss browser dialog |
+| `resize` | Resize viewport to given width × height |
+| `wait` | Sleep N seconds for dynamic content (max 30s cap) |
+| `mousemove` | Move mouse to absolute x/y page coordinates |
+| `mousedown` | Press mouse button |
+| `mouseup` | Release mouse button |
+| `upload` | Upload file to a file input element |
+| `run-code` | Execute inline JS string `async page => { ... }` |
+
+#### Updated
+- `browser_agent.system.md` — full action reference table with all 30 actions, grouped by category, with usage rules for scroll, drag, eval, resize, wait
 
 ### v1.1.0 — 2026-03-25
 
