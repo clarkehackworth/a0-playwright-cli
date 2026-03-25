@@ -1,6 +1,6 @@
 # A0 Playwright CLI
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Agent Zero](https://img.shields.io/badge/Agent%20Zero-plugin-orange)
+![Version](https://img.shields.io/badge/version-1.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Agent Zero](https://img.shields.io/badge/Agent%20Zero-plugin-orange)
 
 Microsoft Playwright CLI browser automation plugin for [Agent Zero](https://github.com/frdel/agent-zero). Gives every agent a `browser_agent` tool to navigate, interact with, and extract data from any website using structured DOM snapshots with stable element references.
 
@@ -154,7 +154,7 @@ The `browser_agent` tool is available to all agents when the plugin is enabled:
 
 ```
 playwright_cli/
-├── plugin.yaml                          # Plugin manifest (v1.0.0)
+├── plugin.yaml                          # Plugin manifest (v1.1.0)
 ├── initialize.py                        # Auto-installer for playwright-cli + Chromium
 ├── default_config.yaml                  # Minimal config (inherits A0 browser model)
 ├── tools/
@@ -191,4 +191,27 @@ playwright_cli/
 
 ## License
 
-MIT
+MIT — Copyright (c) 2026 Emichi d.o.o. See [LICENSE](LICENSE) for details.
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-03-25
+
+#### Bug Fixes
+- **`get_log()` implemented** — `PlaywrightCliBackend` now exposes a `get_log()` method populated throughout task execution. Previously, the `hasattr` guard in `BrowserAgent` always returned `False`, leaving the Agent Zero progress log empty for every browser task.
+- **`get_screenshot()` implemented** — `PlaywrightCliBackend` now exposes an async `get_screenshot(path)` method. Previously, screenshots were never captured or surfaced in the tool log despite the infrastructure being wired up.
+- **`_truncate_snapshot()` crash fix** — The playwright-cli YAML snapshot format is a top-level list, not a dict. The previous implementation called `dict(snapshot)` on this list, raising `ValueError` and silently crashing every browser task after the first snapshot. Now handles both list (actual format) and dict (fallback) correctly.
+
+#### New
+- **`hooks.py`** — Plugin now auto-installs playwright-cli and Chromium when enabled or updated via Agent Zero's plugin lifecycle hook. No need to manually click Initialize.
+- **`LICENSE`** — MIT license added with Apache 2.0 attribution for upstream playwright-cli (Microsoft Corporation).
+
+#### Improvements
+- `plugin.yaml` — removed non-standard `note` field; content merged into `description`.
+- `webui/config.html` — removed redundant `<template x-if="true">` wrapper; now clean static HTML.
+
+### v1.0.0 — 2026-03-19
+
+- Initial release.

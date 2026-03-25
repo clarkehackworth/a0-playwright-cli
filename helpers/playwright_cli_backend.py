@@ -167,6 +167,7 @@ class PlaywrightCliBackend:
         # Internal state
         self._async_task: Optional[asyncio.Task] = None
         self._result: Optional[str] = None
+        self._log_lines: list = []  # Progress log consumed by BrowserAgent via get_log()
 
     # ── Session helpers ──────────────────────────────────────────────────────
 
@@ -339,6 +340,40 @@ class PlaywrightCliBackend:
             return f"Error: Playwright CLI task failed: {e}"
         return self._result or "Task completed with no result."
 
+    def get_log(self) -> list:
+        """Return a snapshot of current progress log lines.
+
+        Called by BrowserAgent.execute() via hasattr guard at lines 90 and 137
+        to surface live progress updates to the Agent Zero UI.
+        Returns a copy so callers cannot mutate internal state.
+        """
+        return list(self._log_lines)
+
+    async def get_screenshot(self, path: str) -> "str | None":
+        """Take a screenshot and save it to the given path.
+
+        Called by BrowserAgent.get_update() via hasattr guard at line 143
+        to capture and surface browser screenshots in the Agent Zero UI log.
+
+        Args:
+            path: Absolute path where the PNG screenshot should be saved.
+
+        Returns:
+            The path string on success, or None if the screenshot failed.
+        """
+        sid = self.get_session_id()
+        try:
+            await self._run_cmd([f"-s={sid}", "screenshot", f"--filename={path}"])
+            if os.path.exists(path):
+                log.debug("PlaywrightCliBackend.get_screenshot: saved to %s", path)
+                return path
+            log.warning("PlaywrightCliBackend.get_screenshot: file not found after command: %s", path)
+            return None
+        except Exception as e:
+            log.warning("PlaywrightCliBackend.get_screenshot: failed: %s", e)
+            return None
+
+
     # ── Snapshot helpers ──────────────────────────────────────────────────────
 
     async def _get_snapshot(self, sid: str) -> dict:
@@ -372,21 +407,46 @@ class PlaywrightCliBackend:
                 pass
             return {}
 
-    def _truncate_snapshot(self, snapshot: dict) -> dict:
-        """Limit elements to SNAPSHOT_MAX_ELEMENTS at dict level before serialization.
-        Prevents invalid JSON from string-slicing and keeps prompts token-efficient.
+    def _truncate_snapshot(self, snapshot) -> object:
+        """Limit elements to SNAPSHOT_MAX_ELEMENTS before serialization.
+
+        playwright-cli snapshot YAML format is a **top-level list** of ARIA tree nodes:
+            - generic [ref=e2]:
+              - heading "Example Domain" [level=1] [ref=e3]
+              - paragraph [ref=e4]: ...
+
+        PyYAML parses this as a Python list. The previous implementation called
+        dict(snapshot) which raises ValueError on list input — crashing every
+        browser task after the first snapshot.
+
+        Handles both formats:
+        - list  (playwright-cli actual format): truncate top-level items directly
+        - dict  (fallback for future format changes): check known element-list keys
         """
-        result = dict(snapshot)
-        # Try common element list keys from playwright-cli snapshot format
-        for key in ("elements", "nodes", "items"):
-            elements = result.get(key)
-            if isinstance(elements, list) and len(elements) > self.SNAPSHOT_MAX_ELEMENTS:
-                result[key] = elements[: self.SNAPSHOT_MAX_ELEMENTS]
-                result["_truncated"] = (
-                    f"{len(elements) - self.SNAPSHOT_MAX_ELEMENTS} elements omitted"
-                )
-                break
-        return result
+        # playwright-cli actual format: top-level list of ARIA tree nodes
+        if isinstance(snapshot, list):
+            if len(snapshot) > self.SNAPSHOT_MAX_ELEMENTS:
+                omitted = len(snapshot) - self.SNAPSHOT_MAX_ELEMENTS
+                truncated = snapshot[: self.SNAPSHOT_MAX_ELEMENTS]
+                truncated.append(f"... {omitted} elements omitted")
+                return truncated
+            return snapshot
+
+        # Fallback: dict with named element-list keys
+        if isinstance(snapshot, dict):
+            result = dict(snapshot)
+            for key in ("elements", "nodes", "items", "children", "tree"):
+                elements = result.get(key)
+                if isinstance(elements, list) and len(elements) > self.SNAPSHOT_MAX_ELEMENTS:
+                    result[key] = elements[: self.SNAPSHOT_MAX_ELEMENTS]
+                    result["_truncated"] = (
+                        f"{len(elements) - self.SNAPSHOT_MAX_ELEMENTS} elements omitted"
+                    )
+                    break
+            return result
+
+        # Unknown type — return as-is, byte cap in _build_prompt will protect context
+        return snapshot
 
     # ── Main execution loop ───────────────────────────────────────────────────
 
@@ -394,17 +454,18 @@ class PlaywrightCliBackend:
         """Core agentic loop: snapshot → LLM decision → action → repeat."""
         sid = self.get_session_id()
         history: list = []
+        self._log_lines = []  # Reset log lines for this task run
 
         # Open browser session — `open` initializes the session (required before any other command)
         # If task contains a URL, open directly to it; otherwise open a blank session
         url_match = re.search(r"https?://\S+", task)
         try:
-            if url_match:
-                await self._run_cmd([f"-s={sid}", "open", url_match.group(0)])
-            else:
-                await self._run_cmd([f"-s={sid}", "open", "about:blank"])
+            initial_url = url_match.group(0) if url_match else "about:blank"
+            await self._run_cmd([f"-s={sid}", "open", initial_url])
+            self._log_lines.append(f"Browser opened → {initial_url}")
         except RuntimeError as e:
             self._result = f"Error opening browser session: {e}"
+            self._log_lines.append(f"Error opening browser: {str(e)[:120]}")
             return
 
         for step in range(self.MAX_STEPS):
@@ -435,6 +496,7 @@ class PlaywrightCliBackend:
             except Exception as e:
                 log.warning("PlaywrightCliBackend: LLM call failed at step %d: %s", step, e)
                 self._result = f"LLM error at step {step}: {e}"
+                self._log_lines.append(f"Step {step + 1}: LLM error — {str(e)[:120]}")
                 return
 
             history.append(decision)
@@ -445,9 +507,22 @@ class PlaywrightCliBackend:
                 decision.get("ref", ""),
             )
 
+            # Log step progress for BrowserAgent UI display via get_log()
+            _action = decision.get("action", "unknown")
+            _ref = decision.get("ref", "")
+            _val = str(decision.get("value", ""))
+            _reason = decision.get("reasoning", "")
+            _ref_part = f" {_ref}" if _ref else ""
+            _val_short = (_val[:60] + "\u2026") if len(_val) > 60 else _val
+            _val_part = f": {_val_short}" if _val else ""
+            self._log_lines.append(f"Step {step + 1}: {_action}{_ref_part}{_val_part}")
+            if _reason:
+                self._log_lines.append(f"  \u21b3 {_reason[:100]}")
+
             # Check completion
             if decision.get("done") or decision.get("action") == "done":
                 self._result = f"Task complete.\n{decision.get('value', '')}"
+                self._log_lines.append("\u2713 Task complete")
                 break
 
             # Execute action
@@ -457,8 +532,10 @@ class PlaywrightCliBackend:
                 log.warning("PlaywrightCliBackend: action failed at step %d: %s", step, e)
                 # Don't abort — let LLM adapt on next snapshot
                 history[-1]["_error"] = str(e)
+                self._log_lines.append(f"  \u26a0 action error: {str(e)[:100]}")
         else:
             self._result = "Max steps reached without completing task."
+            self._log_lines.append(f"Max steps ({self.MAX_STEPS}) reached — task incomplete")
 
         # Clean up session
         try:
