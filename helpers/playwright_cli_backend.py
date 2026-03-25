@@ -679,7 +679,7 @@ class PlaywrightCliBackend:
             except (TypeError, ValueError):
                 dy = 100
                 dx = 0
-            await self._run_cmd([f"-s={sid}", "mousewheel", str(dx), str(dy)])
+            await self._run_cmd([f"-s={sid}", "mousewheel", "--", str(dx), str(dy)])
 
         elif action == "eval":
             # eval: value = JS expression, ref = optional element ref
