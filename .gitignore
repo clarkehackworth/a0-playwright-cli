@@ -30,3 +30,6 @@ package-lock.json
 # Test results
 test-results/
 .playwright-cli/
+
+# Pytest cache
+.pytest_cache/
