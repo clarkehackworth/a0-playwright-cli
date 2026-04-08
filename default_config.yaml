@@ -1,2 +1,15 @@
-# Playwright CLI Plugin — no custom config needed.
-# Uses Agent Zero built-in Browser Model settings (Settings > Agent > Browser Model).
+# Playwright CLI Plugin — Browser Model Configuration
+# Set provider + model to use a dedicated model for browser tasks.
+# Leave both empty to fall back to the agent's chat model automatically.
+
+# LLM provider for browser tasks (e.g. openai, anthropic, google, openrouter, ollama, groq)
+browser_provider: ""
+
+# Model name (e.g. gpt-4o, claude-3-5-sonnet-20241022, gemini/gemini-2.0-flash)
+browser_model: ""
+
+# Optional API key override. Leave empty to use the provider's default key.
+browser_api_key: ""
+
+# Optional API base URL override (e.g. http://localhost:11434 for Ollama).
+browser_api_base: ""

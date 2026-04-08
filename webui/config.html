@@ -1,23 +1,110 @@
 <html>
-<head><title>Playwright CLI</title></head>
+<head>
+  <title>Playwright CLI</title>
+  <script type="module">
+    import { callJsonApi } from "/js/api.js";
+    globalThis._pwcliApi = { callJsonApi };
+  </script>
+</head>
 <body>
-  <div>
+  <div x-data="{
+    providers: [],
+    async init() {
+      try {
+        const data = await _pwcliApi.callJsonApi('/plugins/a0_playwright_cli/providers', {});
+        this.providers = data.providers || [];
+      } catch(e) {
+        console.warn('Playwright CLI: could not load providers', e);
+      }
+    }
+  }">
     <div class="section">
-      <div class="section-title">Playwright CLI Plugin</div>
+      <div class="section-title">Browser Model</div>
       <div class="section-description">
-        This plugin uses Agent Zero&#39;s built-in <strong>Browser Model</strong> settings.<br/>
-        Configure the browser LLM provider, model name, and parameters under
-        <strong>Settings &#8594; Agent &#8594; Browser Model</strong>.
+        Configure a dedicated LLM for browser tasks.<br/>
+        Leave <strong>Provider</strong> and <strong>Model</strong> empty to fall back to
+        the agent&apos;s chat model automatically.
       </div>
+
+      <!-- Provider dropdown -->
       <div class="field">
         <div class="field-label">
-          <div class="field-title">Status</div>
+          <div class="field-title">Provider</div>
+          <div class="field-description">LLM service provider for browser tasks.</div>
+        </div>
+        <div class="field-control">
+          <select x-model="config.browser_provider">
+            <option value="">— inherit from agent settings —</option>
+            <template x-for="p in providers" :key="p.value">
+              <option :value="p.value" x-text="p.label"></option>
+            </template>
+          </select>
+        </div>
+      </div>
+
+      <!-- Model name -->
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Model Name</div>
           <div class="field-description">
-            Playwright CLI is active. The <code>browser_agent</code> tool is available to all agents.<br/>
-            If Playwright CLI or Chromium are not yet installed, use the
-            <strong>Initialize</strong> button (plugin list page) to install them automatically.
+            Model identifier for the selected provider.<br/>
+            Examples: <code>gpt-4o</code>, <code>claude-3-5-sonnet-20241022</code>,
+            <code>gemini/gemini-2.0-flash</code>, <code>llama3.1:8b</code>
           </div>
         </div>
+        <div class="field-control">
+          <input type="text" x-model="config.browser_model"
+                 placeholder="Leave empty to inherit from agent settings" />
+        </div>
+      </div>
+
+      <!-- API Key -->
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">API Key <span style="opacity:0.5;font-weight:400">(optional)</span></div>
+          <div class="field-description">
+            Override API key for this provider. Leave empty to use the provider&apos;s
+            default key already configured in Agent Zero.
+          </div>
+        </div>
+        <div class="field-control" x-data="{ showKey: false }">
+          <div style="position:relative;">
+            <input :type="showKey ? 'text' : 'password'"
+                   x-model="config.browser_api_key"
+                   placeholder="Optional — uses default provider key if empty"
+                   autocomplete="off"
+                   style="padding-right:36px;" />
+            <span class="material-symbols-outlined"
+                  @click="showKey = !showKey"
+                  style="position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;opacity:0.6;font-size:18px;"
+                  x-text="showKey ? 'visibility_off' : 'visibility'"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- API Base -->
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">API Base URL <span style="opacity:0.5;font-weight:400">(optional)</span></div>
+          <div class="field-description">
+            Custom base URL for the provider endpoint.<br/>
+            Required for self-hosted models, e.g. <code>http://localhost:11434</code> for Ollama.
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="text" x-model="config.browser_api_base"
+                 placeholder="Optional — e.g. http://localhost:11434" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Status section -->
+    <div class="section">
+      <div class="section-title">Status</div>
+      <div class="section-description">
+        Playwright CLI is active. The <code>browser_agent</code> tool is available to all agents.<br/>
+        If Playwright CLI or Chromium are not yet installed, use the
+        <strong>Initialize</strong> button (plugin list page) to install them automatically.
       </div>
     </div>
   </div>

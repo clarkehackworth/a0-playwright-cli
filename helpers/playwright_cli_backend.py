@@ -206,6 +206,52 @@ class PlaywrightCliBackend:
         """
         return {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": self.get_browsers_path()}
 
+    def _build_llm(self):
+        """Resolve the LLM to use for browser task decisions.
+
+        Priority order:
+          1. Plugin config (browser_provider + browser_model set in plugin settings UI)
+          2. agent.get_chat_model() — always-available fallback
+
+        Returns a LangChain-compatible chat model with ainvoke() support.
+        """
+        try:
+            from helpers.plugins import get_plugin_config
+            import models
+            cfg = get_plugin_config("a0_playwright_cli", agent=self.agent) or {}
+            provider = (cfg.get("browser_provider") or "").strip()
+            model_name = (cfg.get("browser_model") or "").strip()
+            if provider and model_name:
+                api_key = (cfg.get("browser_api_key") or "").strip()
+                api_base = (cfg.get("browser_api_base") or "").strip()
+                mc = models.ModelConfig(
+                    type=models.ModelType.CHAT,
+                    provider=provider,
+                    name=model_name,
+                    api_key=api_key,
+                    api_base=api_base,
+                )
+                provider_name, kwargs = models._merge_provider_defaults(
+                    "chat", provider, mc.build_kwargs()
+                )
+                llm = models._get_litellm_chat(
+                    models.LiteLLMChatWrapper,
+                    model_name,
+                    provider_name,
+                    mc,
+                    **kwargs,
+                )
+                log.debug(
+                    "PlaywrightCliBackend: using plugin-configured browser model %s/%s",
+                    provider, model_name,
+                )
+                return llm
+        except Exception as e:
+            log.warning("PlaywrightCliBackend._build_llm: plugin config error: %s", e)
+
+        # Fallback: use the agent's chat model
+        return self.agent.get_chat_model()
+
     @staticmethod
     def validate_binary() -> bool:
         """Check that playwright-cli binary is available. Returns True if found."""
@@ -476,16 +522,12 @@ class PlaywrightCliBackend:
             # Build LLM prompt with snapshot + history
             prompt = self._build_prompt(task, truncated, history)
 
-            # Call browser LLM — SystemMessage carries browser_agent.system.md instructions;
-            # HumanMessage carries situational context (task + snapshot + history)
-            # Uses agent.get_browser_model() (Settings > Agent > Browser Model);
-            # falls back to agent.llm if browser model is not configured.
+            # Call browser LLM — resolves model via _build_llm() priority chain:
+            # 1. Plugin config (Settings > Playwright CLI > Browser Model)
+            # 2. agent.get_chat_model() — always-available fallback
             try:
                 from langchain_core.messages import HumanMessage, SystemMessage
-                try:
-                    llm = self.agent.get_browser_model()
-                except Exception:
-                    llm = self.agent.llm
+                llm = self._build_llm()
                 system_text = self._load_system_prompt()
                 messages = []
                 if system_text:
