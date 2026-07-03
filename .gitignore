@@ -37,3 +37,6 @@ test-results/
 # Dev-only test files (not needed by plugin users)
 tests/
 pytest.ini
+
+# Serena MCP tool state
+.serena/

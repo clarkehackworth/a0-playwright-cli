@@ -168,6 +168,7 @@ class PlaywrightCliBackend:
         self._async_task: Optional[asyncio.Task] = None
         self._result: Optional[str] = None
         self._log_lines: list = []  # Progress log consumed by BrowserAgent via get_log()
+        self._chrome_proc = None  # Per-task Chrome process (browser_launch_chrome mode)
 
     # ── Session helpers ──────────────────────────────────────────────────────
 
@@ -206,6 +207,111 @@ class PlaywrightCliBackend:
         """
         return {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": self.get_browsers_path()}
 
+    def _plugin_cfg(self) -> dict:
+        """Return plugin config dict (empty on any error)."""
+        try:
+            from helpers.plugins import get_plugin_config
+            return get_plugin_config("a0_playwright_cli", agent=self.agent) or {}
+        except Exception as e:
+            log.debug("PlaywrightCliBackend._plugin_cfg: %s", e)
+            return {}
+
+    def _get_cdp_endpoint(self) -> str:
+        """Configured CDP endpoint of an externally-running Chrome, or ''."""
+        ep = str(self._plugin_cfg().get("browser_cdp_endpoint") or "").strip()
+        if ep and not ep.startswith(("http://", "https://", "ws://", "wss://")):
+            log.warning("PlaywrightCliBackend: ignoring invalid CDP endpoint '%s'", ep[:100])
+            return ""
+        return ep
+
+    def _launch_per_task(self) -> bool:
+        """True when config asks for a dedicated Chrome per task (attached via CDP)."""
+        return str(self._plugin_cfg().get("browser_launch_chrome") or "").strip().lower() in (
+            "true", "1", "yes", "on",
+        )
+
+    @staticmethod
+    def _find_chrome_binary() -> str:
+        """Locate a Chrome/Chromium binary: system Chrome first, playwright's as fallback."""
+        import shutil
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            path = shutil.which(name)
+            if path:
+                return path
+        pw_helper = _load_module("playwright_helper", "helpers/playwright.py")
+        return pw_helper.ensure_playwright_binary()
+
+    async def _launch_chrome(self, sid: str, url: str) -> str:
+        """Launch a dedicated Chrome with its own profile and CDP port.
+
+        Returns the CDP endpoint URL once /json/version responds.
+        The process handle is kept in self._chrome_proc for cleanup.
+        """
+        import socket
+        import urllib.request
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        # ponytail: free-port probe races with Chrome's bind; collisions are
+        # vanishingly rare — surface as a task error, retry logic if it ever bites
+        binary = self._find_chrome_binary()
+        profile = os.path.join(tempfile.gettempdir(), f"a0-chrome-{sid}")
+        self._chrome_proc = await asyncio.create_subprocess_exec(
+            binary,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            url,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        endpoint = f"http://127.0.0.1:{port}"
+        for _ in range(50):  # up to ~15s for Chrome to open the CDP port
+            if self._chrome_proc.returncode is not None:
+                raise RuntimeError(
+                    f"Chrome exited during startup (code {self._chrome_proc.returncode})"
+                )
+            try:
+                await asyncio.to_thread(
+                    urllib.request.urlopen, f"{endpoint}/json/version", timeout=1
+                )
+                log.info("PlaywrightCliBackend: launched Chrome (pid %s) at %s",
+                         self._chrome_proc.pid, endpoint)
+                return endpoint
+            except Exception:
+                await asyncio.sleep(0.3)
+        self._stop_chrome()
+        raise RuntimeError(f"Chrome CDP endpoint not ready at {endpoint} after 15s")
+
+    def _stop_chrome(self) -> None:
+        """Terminate the per-task Chrome, if we launched one. Best-effort."""
+        proc = self._chrome_proc
+        self._chrome_proc = None
+        if proc and proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+
+    def _is_persistent(self) -> bool:
+        """Remote-browser modes keep the browser open across tasks."""
+        return bool(self._get_cdp_endpoint()) or self._launch_per_task()
+
+    async def _session_alive(self, sid: str) -> bool:
+        """True if playwright-cli's daemon still holds a session named sid."""
+        try:
+            out = await self._run_cmd(["list"])
+            return sid in (out or "")
+        except Exception:
+            return False
+
+    def _is_headed(self) -> bool:
+        """True when config asks for a visible Chrome window."""
+        return str(self._plugin_cfg().get("browser_headed") or "").strip().lower() in (
+            "true", "1", "yes", "on",
+        )
+
     def _build_llm(self):
         """Resolve the LLM to use for browser task decisions.
 
@@ -216,9 +322,8 @@ class PlaywrightCliBackend:
         Returns a LangChain-compatible chat model with ainvoke() support.
         """
         try:
-            from helpers.plugins import get_plugin_config
             import models
-            cfg = get_plugin_config("a0_playwright_cli", agent=self.agent) or {}
+            cfg = self._plugin_cfg()
             provider = (cfg.get("browser_provider") or "").strip()
             model_name = (cfg.get("browser_model") or "").strip()
             if provider and model_name:
@@ -322,8 +427,11 @@ class PlaywrightCliBackend:
         """Schedule _run_task as an asyncio task. Must be called from async context.
         Returns PlaywrightCliTask wrapping the asyncio task.
         """
-        # Ensure Chrome wrapper exists at /opt/google/chrome/chrome (restart-proof)
-        self._ensure_chrome_wrapper()
+        # Ensure Chrome wrapper exists at /opt/google/chrome/chrome (restart-proof).
+        # Skip for headed/CDP modes — the wrapper hardcodes --headless=new and only
+        # exists for headless Docker environments.
+        if not self._get_cdp_endpoint() and not self._is_headed():
+            self._ensure_chrome_wrapper()
         # Pre-flight check: binary must exist
         if not self.validate_binary():
             raise RuntimeError(
@@ -341,6 +449,9 @@ class PlaywrightCliBackend:
             self._async_task.cancel()
         if self.task:
             self.task.kill()
+        if self._is_persistent():
+            return  # remote browser stays open; only the task was cancelled
+        self._stop_chrome()  # kill per-task Chrome if one was launched
         # Close browser session — use to_thread to avoid blocking event loop
         sid = self.get_session_id()
         env = self._make_env()
@@ -507,9 +618,44 @@ class PlaywrightCliBackend:
         url_match = re.search(r"https?://\S+", task)
         try:
             initial_url = url_match.group(0) if url_match else "about:blank"
-            await self._run_cmd([f"-s={sid}", "open", initial_url])
-            self._log_lines.append(f"Browser opened → {initial_url}")
+            reused = False
+            if self._is_persistent() and await self._session_alive(sid):
+                # Session from a previous task is still attached — reuse it
+                try:
+                    if initial_url != "about:blank":
+                        await self._run_cmd([f"-s={sid}", "goto", initial_url])
+                    else:
+                        await self._run_cmd([f"-s={sid}", "tab-list"])  # liveness probe
+                    reused = True
+                    self._log_lines.append(f"Reusing open browser → {initial_url}")
+                except RuntimeError:
+                    # Stale session (browser gone) — drop it and start fresh
+                    try:
+                        await self._run_cmd([f"-s={sid}", "close"])
+                    except Exception:
+                        pass
+            cdp = self._get_cdp_endpoint()
+            if reused:
+                pass
+            elif not cdp and self._launch_per_task():
+                # Launch a dedicated Chrome and attach to it via CDP
+                cdp = await self._launch_chrome(sid, initial_url)
+                await self._run_cmd([f"-s={sid}", "attach", f"--cdp={cdp}"])
+                self._log_lines.append(f"Launched Chrome at {cdp} → {initial_url}")
+            elif cdp:
+                # Attach to an externally-running Chrome
+                await self._run_cmd([f"-s={sid}", "attach", f"--cdp={cdp}"])
+                if initial_url != "about:blank":
+                    await self._run_cmd([f"-s={sid}", "goto", initial_url])
+                self._log_lines.append(f"Attached to Chrome at {cdp} → {initial_url}")
+            else:
+                open_args = [f"-s={sid}", "open", initial_url]
+                if self._is_headed():
+                    open_args.append("--headed")
+                await self._run_cmd(open_args)
+                self._log_lines.append(f"Browser opened → {initial_url}")
         except RuntimeError as e:
+            self._stop_chrome()  # don't leak a launched Chrome if attach failed
             self._result = f"Error opening browser session: {e}"
             self._log_lines.append(f"Error opening browser: {str(e)[:120]}")
             return
@@ -579,11 +725,14 @@ class PlaywrightCliBackend:
             self._result = "Max steps reached without completing task."
             self._log_lines.append(f"Max steps ({self.MAX_STEPS}) reached — task incomplete")
 
-        # Clean up session
-        try:
-            await self._run_cmd([f"-s={sid}", "close"])
-        except Exception:
-            pass  # Best-effort close
+        # Clean up session — persistent (remote) browsers stay open for the next task
+        if self._is_persistent():
+            self._log_lines.append("Browser left open (persistent mode)")
+        else:
+            try:
+                await self._run_cmd([f"-s={sid}", "close"])
+            except Exception:
+                pass  # Best-effort close
 
     # ── Decision parsing ──────────────────────────────────────────────────────
 

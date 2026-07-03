@@ -64,6 +64,20 @@ Go to **Settings → Agent → Browser Model** to configure:
 
 > No plugin-specific config page needed — all browser model settings live in the standard Agent Zero settings.
 
+### Visible Chrome windows / attaching to a running Chrome
+
+Two plugin config options (in `default_config.yaml` / plugin settings) control where the browser runs:
+
+| Option | Effect |
+|--------|--------|
+| `browser_headed: true` | Each browser task opens a visible Chrome window (requires a display; not for Docker) |
+| `browser_launch_chrome: true` | Launch a dedicated Chrome — own profile, own CDP port — and attach to it. Concurrent agent contexts each get their own window. |
+| `browser_cdp_endpoint` | Attach to an already-running Chrome instead of launching one. Start Chrome with `google-chrome --remote-debugging-port=9222`, then set `http://127.0.0.1:9222`. |
+
+Precedence: `browser_cdp_endpoint` > `browser_launch_chrome` > `browser_headed`.
+
+Both remote modes are **persistent**: the browser window stays open between tasks and the session is reused — the next task continues in the same window (and inherits its logins/cookies). Close the window yourself, or run `playwright-cli close-all`, to reset.
+
 ---
 
 ## How It Works
