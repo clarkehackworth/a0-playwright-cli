@@ -30,10 +30,10 @@ from helpers.secrets import get_secrets_manager
 
 class BrowserAgent(Tool):
 
-    async def execute(self, message="", reset="", **kwargs):
+    async def execute(self, message="", reset="", window="default", **kwargs):
         self.guid = self.agent.context.generate_id()
         reset = str(reset).lower().strip() == "true"
-        await self.prepare_state(reset=reset)
+        await self.prepare_state(reset=reset, window=window)
         message = get_secrets_manager(self.agent.context).mask_values(
             message, placeholder="<secret>{key}</secret>"
         )
@@ -152,9 +152,15 @@ class BrowserAgent(Tool):
 
         return result
 
-    async def prepare_state(self, reset=False):
-        """Initialize PlaywrightCliBackend — the sole backend since v2.1.0."""
-        state_key = "_browser_agent_state_playwright_cli"
+    async def prepare_state(self, reset=False, window="default"):
+        """Initialize PlaywrightCliBackend — the sole backend since v2.1.0.
+
+        Each distinct `window` name gets its own backend instance (own browser
+        window + playwright-cli session), so one task can drive several in parallel.
+        """
+        import re
+        window = re.sub(r"[^a-z0-9_-]", "", str(window or "default").lower())[:24] or "default"
+        state_key = f"_browser_agent_state_playwright_cli:{window}"
         self.state = self.agent.get_data(state_key)
 
         if reset and self.state:
@@ -172,7 +178,7 @@ class BrowserAgent(Tool):
                 _spec.loader.exec_module(_mod)
             else:
                 _mod = sys.modules[_mod_name]
-            self.state = _mod.PlaywrightCliBackend(self.agent)
+            self.state = _mod.PlaywrightCliBackend(self.agent, window=window)
         self.agent.set_data(state_key, self.state)
 
     def update_progress(self, text):

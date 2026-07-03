@@ -23,3 +23,11 @@ playwright-cli snapshot
 playwright-cli click e3
 playwright-cli close
 ```
+
+**Parallel windows:** to drive several independent browser windows at once, call
+`browser_agent` with a `window` argument (any short name). Each distinct name gets
+its own persistent window and session; reuse the same name to continue in that window.
+```
+browser_agent  window="research"  message="open https://news.example.com and summarize"
+browser_agent  window="checkout"  message="open https://shop.example.com and add item X to cart"
+```

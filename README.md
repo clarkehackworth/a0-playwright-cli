@@ -12,6 +12,7 @@ Microsoft Playwright CLI browser automation plugin for [Agent Zero](https://gith
 - 🤖 **Uses Agent Zero Browser Model** — no separate LLM config needed, inherits your Settings → Agent → Browser Model
 - 🔧 **Auto-skill injection** — the full Playwright CLI skill is injected into the agent system prompt automatically
 - 📋 **30 browser actions** — navigation, interaction, keyboard & mouse, scroll, eval/JS, drag, dialogs, tabs, viewport, and more
+- 🖥️ **Remote browser control** — attach to a running Chrome over CDP, or launch a dedicated headed Chrome per context; remote browsers stay open across tasks and are reused
 - 🔒 **Security validated** — URL allowlist (http/https only), element ref pattern validation
 - 📱 **Mobile/device emulation** — emulate any device viewport
 - 🕸️ **Network mocking** — intercept and mock HTTP requests
@@ -45,6 +46,14 @@ If initialization fails:
 ```bash
 npm install -g @playwright/cli@latest
 playwright-cli install
+```
+
+### Deploy to a container
+
+To push a working copy into a running `agent-zero` Docker container (over `ssh://docker.lan`):
+```bash
+./deploy.sh            # copy files + run initializer
+./deploy.sh --restart  # also restart the container
 ```
 
 ---
@@ -209,9 +218,10 @@ The `browser_agent` tool is available to all agents when the plugin is enabled:
 
 ```
 playwright_cli/
-├── plugin.yaml                          # Plugin manifest (v1.2.0)
+├── plugin.yaml                          # Plugin manifest
 ├── initialize.py                        # Auto-installer for playwright-cli + Chromium
-├── default_config.yaml                  # Minimal config (inherits A0 browser model)
+├── default_config.yaml                  # Config (browser model + remote browser modes)
+├── deploy.sh                            # Push the plugin to the agent-zero container
 ├── tools/
 │   └── browser_agent.py                 # browser_agent tool
 ├── helpers/
@@ -251,6 +261,15 @@ MIT — Copyright (c) 2026 Emichi d.o.o. See [LICENSE](LICENSE) for details.
 ---
 
 ## Changelog
+
+### Unreleased
+
+#### Remote browser control
+- `browser_headed` — open a visible Chrome window per task (needs a display)
+- `browser_launch_chrome` — launch a dedicated Chrome (own profile + CDP port), attach to it, and keep it open across tasks
+- `browser_cdp_endpoint` — attach to an already-running Chrome via CDP
+- Remote modes (CDP / launched) are **persistent**: the browser stays open between tasks and the session is reused, so page and login state carry over. Precedence: `browser_cdp_endpoint` > `browser_launch_chrome` > `browser_headed`.
+- Added `deploy.sh` to push the plugin to the `agent-zero` container.
 
 ### v1.2.0 — 2026-03-25
 

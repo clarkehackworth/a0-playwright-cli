@@ -160,8 +160,11 @@ class PlaywrightCliBackend:
     SNAPSHOT_MAX_BYTES = 16000  # Cap total snapshot JSON to prevent LLM context overflow
     TASK_TIMEOUT = 300  # seconds
 
-    def __init__(self, agent):
+    def __init__(self, agent, window: str = "default"):
         self.agent = agent
+        # Window name → separate playwright-cli session + browser window, so one
+        # context can drive several independent windows. Sanitized to a safe slug.
+        self.window = re.sub(r"[^a-z0-9_-]", "", str(window or "default").lower())[:24] or "default"
         # State interface compatibility attributes
         self.task: Optional[PlaywrightCliTask] = None
         # Internal state
@@ -169,6 +172,7 @@ class PlaywrightCliBackend:
         self._result: Optional[str] = None
         self._log_lines: list = []  # Progress log consumed by BrowserAgent via get_log()
         self._chrome_proc = None  # Per-task Chrome process (browser_launch_chrome mode)
+        self._chrome_profile = None  # Its unique --user-data-dir, removed on stop
 
     # ── Session helpers ──────────────────────────────────────────────────────
 
@@ -178,7 +182,7 @@ class PlaywrightCliBackend:
         in concurrent multi-agent deployments.
         """
         raw = self.agent.context.id.replace('-', '')
-        return f"a0-{raw[:16]}"
+        return f"a0-{raw[:16]}-{self.window}"
 
     def get_browsers_path(self) -> str:
         """Return PLAYWRIGHT_BROWSERS_PATH by traversing 3x dirname from the binary.
@@ -255,11 +259,16 @@ class PlaywrightCliBackend:
         # ponytail: free-port probe races with Chrome's bind; collisions are
         # vanishingly rare — surface as a task error, retry logic if it ever bites
         binary = self._find_chrome_binary()
-        profile = os.path.join(tempfile.gettempdir(), f"a0-chrome-{sid}")
+        # Unique profile per launch. A fixed per-sid path collides with the still-open
+        # Chrome from a previous task (persistent mode keeps it alive): the second
+        # process finds the SingletonLock, prints "Opening in existing browser session",
+        # forwards to the old instance and exits — so the new CDP port never opens and
+        # the launch hangs/flaps. A fresh dir has no lock to collide with.
+        self._chrome_profile = tempfile.mkdtemp(prefix=f"a0-chrome-{sid}-")
         self._chrome_proc = await asyncio.create_subprocess_exec(
             binary,
             f"--remote-debugging-port={port}",
-            f"--user-data-dir={profile}",
+            f"--user-data-dir={self._chrome_profile}",
             "--no-first-run",
             "--no-default-browser-check",
             url,
@@ -293,6 +302,11 @@ class PlaywrightCliBackend:
                 proc.terminate()
             except ProcessLookupError:
                 pass
+        profile = self._chrome_profile
+        self._chrome_profile = None
+        if profile:
+            import shutil
+            shutil.rmtree(profile, ignore_errors=True)
 
     def _is_persistent(self) -> bool:
         """Remote-browser modes keep the browser open across tasks."""
@@ -302,7 +316,9 @@ class PlaywrightCliBackend:
         """True if playwright-cli's daemon still holds a session named sid."""
         try:
             out = await self._run_cmd(["list"])
-            return sid in (out or "")
+            # Match the exact list entry ("- <sid>:"), not a loose substring, so a
+            # window named "check" doesn't match another window's "checkout" session.
+            return re.search(rf"(?m)^\s*-\s*{re.escape(sid)}\s*:", out or "") is not None
         except Exception:
             return False
 
