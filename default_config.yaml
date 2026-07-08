@@ -22,7 +22,24 @@ browser_headed: false
 browser_launch_chrome: false
 
 # Connect to an already-running Chrome via CDP instead of launching one.
-# Start Chrome with: google-chrome --remote-debugging-port=9222
+# Start Chrome with: google-chrome --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:8080
 # Then set e.g. http://127.0.0.1:9222
 # Precedence: browser_cdp_endpoint > browser_launch_chrome > browser_headed.
 browser_cdp_endpoint: ""
+
+# --- Pentest / Burp Suite support (applies to browser_launch_chrome mode only) ---
+
+# Route Chrome's traffic through an intercepting proxy, e.g. Burp: http://127.0.0.1:8080
+browser_proxy_server: ""
+
+# Ignore TLS cert errors — needed for Burp's CA unless it's installed as trusted.
+browser_ignore_cert_errors: false
+
+# Tag every request from the launched Chrome with an X-PwnFox-Color header
+# (github.com/yeswehack/PwnFox convention) so Burp's proxy history can be
+# filtered/highlighted per browser window/task.
+browser_pwnfox_headers: false
+
+# Fixed color for the header above. One of: blue, turquoise, green, yellow,
+# orange, red, pink, purple. Leave empty to auto-assign a color per window name.
+browser_pwnfox_color: ""

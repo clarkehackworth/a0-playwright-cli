@@ -87,6 +87,19 @@ Precedence: `browser_cdp_endpoint` > `browser_launch_chrome` > `browser_headed`.
 
 Both remote modes are **persistent**: the browser window stays open between tasks and the session is reused — the next task continues in the same window (and inherits its logins/cookies). Close the window yourself, or run `playwright-cli close-all`, to reset.
 
+### Pentesting through Burp Suite
+
+These options (`browser_launch_chrome: true` mode only) route the launched Chrome through an intercepting proxy for the AI to drive alongside a Burp MCP server:
+
+| Option | Effect |
+|--------|--------|
+| `browser_proxy_server` | e.g. `http://127.0.0.1:8080` — Burp's proxy listener |
+| `browser_ignore_cert_errors: true` | Skip TLS warnings from Burp's CA (or install Burp's CA as trusted instead) |
+| `browser_pwnfox_headers: true` | Tag every request — including tabs/popups opened later — with `X-PwnFox-Color` ([PwnFox](https://github.com/yeswehack/PwnFox) convention) so Burp's proxy history can be filtered/highlighted per window |
+| `browser_pwnfox_color` | Fix the color (`blue`/`turquoise`/`green`/`yellow`/`orange`/`red`/`pink`/`purple`); leave empty to auto-assign one per `window` name, so concurrent windows get distinct colors automatically |
+
+Attaching to an already-running Chrome (`browser_cdp_endpoint`) works too — just launch it yourself with `--proxy-server=...` (and `--ignore-certificate-errors` if needed); PwnFox tagging isn't wired up for that mode.
+
 ---
 
 ## How It Works

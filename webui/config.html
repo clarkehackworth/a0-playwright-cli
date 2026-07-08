@@ -98,6 +98,125 @@
       </div>
     </div>
 
+    <div class="section">
+      <div class="section-title">Remote Browser</div>
+      <div class="section-description">
+        Attach to an already-running Chrome, or have this plugin launch a dedicated one per task.
+        Precedence: CDP Endpoint &gt; Launch Chrome &gt; Headed.
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">CDP Endpoint <span style="opacity:0.5;font-weight:400">(optional)</span></div>
+          <div class="field-description">
+            Connect to Chrome you started yourself instead of launching one.<br/>
+            Start it with: <code>google-chrome --remote-debugging-port=9222</code>, then e.g. <code>http://127.0.0.1:9222</code>
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="text" x-model="config.browser_cdp_endpoint" placeholder="e.g. http://127.0.0.1:9222" />
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Launch Dedicated Chrome</div>
+          <div class="field-description">Launch a separate Chrome (own profile, own window) per task instead of using playwright-cli's own browser.</div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.browser_launch_chrome" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Headed</div>
+          <div class="field-description">Open a visible Chrome window for each browser task. Requires a display.</div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.browser_headed" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pentest / Burp Suite section -->
+    <div class="section">
+      <div class="section-title">Pentesting (Burp Suite)</div>
+      <div class="section-description">
+        Applies only when <strong>Launch Dedicated Chrome</strong> is on. Routes that Chrome's traffic
+        through an intercepting proxy and tags requests for correlation in Burp's proxy history.
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Proxy Server <span style="opacity:0.5;font-weight:400">(optional)</span></div>
+          <div class="field-description">Intercepting proxy address, e.g. Burp's listener.</div>
+        </div>
+        <div class="field-control">
+          <input type="text" x-model="config.browser_proxy_server" placeholder="e.g. http://127.0.0.1:8080" />
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Ignore Certificate Errors</div>
+          <div class="field-description">Skip TLS warnings from Burp's CA. Alternative: install Burp's CA as trusted instead.</div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.browser_ignore_cert_errors" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">PwnFox-style Headers</div>
+          <div class="field-description">
+            Tag every request (including tabs/popups opened later) with an <code>X-PwnFox-Color</code> header
+            (<a href="https://github.com/yeswehack/PwnFox" target="_blank">PwnFox</a> convention) so Burp's
+            proxy history can be filtered/highlighted per window.
+          </div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.browser_pwnfox_headers" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">PwnFox Color <span style="opacity:0.5;font-weight:400">(optional)</span></div>
+          <div class="field-description">
+            Fix the color used for the header above. Leave on auto to derive a stable color per
+            browser-agent <code>window</code> name, so concurrent windows get distinct colors automatically.
+          </div>
+        </div>
+        <div class="field-control">
+          <select x-model="config.browser_pwnfox_color">
+            <option value="">— auto (per window) —</option>
+            <option value="blue">blue</option>
+            <option value="turquoise">turquoise</option>
+            <option value="green">green</option>
+            <option value="yellow">yellow</option>
+            <option value="orange">orange</option>
+            <option value="red">red</option>
+            <option value="pink">pink</option>
+            <option value="purple">purple</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- Status section -->
     <div class="section">
       <div class="section-title">Status</div>
