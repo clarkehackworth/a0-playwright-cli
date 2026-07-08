@@ -65,6 +65,18 @@ Respond with a **single JSON object only** — no prose, no markdown fences, no 
 | `run-code` | `value` (inline JS: `async page => { ... }`) | Run complex multi-step JavaScript against the page |
 | `resize` | `value` (`"width height"`) or `width`+`height` fields | Resize the browser viewport |
 
+### Artifacts (persisted — path is returned, not deleted)
+
+| Action | Required fields | Description |
+|--------|----------------|-------------|
+| `video-start` | — | Start recording the session to video |
+| `video-stop` | — | Stop recording, save the `.webm`, and get its path |
+| `annotate` | `annotations` (list) | Screenshot with boxes/arrows/text labels drawn on it — for repro walkthroughs ("click here", "type this") |
+
+`annotations` items: `{"ref": "e5", "type": "box"|"arrow"|"text", "text": "Click here"}`. Use `ref` to point at a
+snapshot element, or `"x"`/`"y"` (viewport px) instead of `ref` for a free-floating point. `box` outlines the
+element, `arrow` points at its center, `text` places a label with no shape. Up to 20 annotations per call.
+
 ### Dialogs
 
 | Action | Required fields | Description |
@@ -106,3 +118,5 @@ Respond with a **single JSON object only** — no prose, no markdown fences, no 
 13. **Drag** — use `ref` for the source element and `target` for the destination element ref.
 14. **Resize** — set `value` to `"width height"` string (e.g. `"1920 1080"`) or set separate `width` and `height` fields.
 15. **Scroll** — set `value` to the number of pixels to scroll vertically (positive = down, negative = up). Set `dx` for horizontal scroll.
+16. **Artifact paths** — after `video-stop` or `annotate`, the saved file's path appears as `_artifact` on that step in history. Include it in the `done` value so the user can find the file.
+17. **Tabs** — any tab action (`tab-list`/`tab-new`/`tab-select`/`tab-close`) returns the current open-tab list as `_tabs` on that step in history, formatted `- <index>: (current) [Title](url)`. The page snapshot only shows the **current** tab, so use `tab-list` to discover tabs the user opened, then `tab-select <index>` to act on one. Tab indices can shift when tabs are closed — re-run `tab-list` before selecting rather than reusing an old index. You stay glued to your working tab automatically even if the user switches tabs; if a step's history shows a `_notice` saying your tab was closed, re-orient with `tab-list`.

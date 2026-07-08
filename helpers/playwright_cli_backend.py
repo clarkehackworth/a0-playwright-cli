@@ -37,6 +37,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import logging
 from typing import Optional
 
@@ -62,6 +63,72 @@ def _load_module(name: str, relpath: str):
     return mod
 
 
+
+# ---------------------------------------------------------------------------
+# Minimal CDP WebSocket client (stdlib only — no playwright/websockets dependency).
+# Just enough RFC6455 to send commands and read frames on a single connection;
+# used only to keep a Network.setExtraHTTPHeaders override alive (see
+# PlaywrightCliBackend._pwnfox_tag_task).
+# ---------------------------------------------------------------------------
+
+async def _cdp_ws_connect(ws_url: str):
+    import base64
+    from urllib.parse import urlparse
+    u = urlparse(ws_url)
+    reader, writer = await asyncio.open_connection(u.hostname, u.port or 80)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = (
+        f"GET {u.path or '/'} HTTP/1.1\r\n"
+        f"Host: {u.hostname}:{u.port}\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    writer.write(req.encode())
+    await writer.drain()
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        chunk = await reader.read(4096)
+        if not chunk:
+            break
+        resp += chunk
+    if b" 101 " not in resp.split(b"\r\n", 1)[0]:
+        raise RuntimeError(f"CDP websocket handshake failed: {resp[:200]!r}")
+    return reader, writer
+
+
+def _ws_frame(payload: bytes, opcode: int = 0x1) -> bytes:
+    """Encode a single masked client->server text frame (client frames must be masked)."""
+    mask = os.urandom(4)
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    length = len(payload)
+    if length <= 125:
+        header = bytes([0x80 | opcode, 0x80 | length])
+    elif length <= 65535:
+        header = bytes([0x80 | opcode, 0x80 | 126]) + length.to_bytes(2, "big")
+    else:
+        header = bytes([0x80 | opcode, 0x80 | 127]) + length.to_bytes(8, "big")
+    return header + mask + masked
+
+
+async def _ws_read_frame(reader) -> bytes:
+    """Read one server->client frame (unmasked, not fragmented — sufficient for CDP)."""
+    first2 = await reader.readexactly(2)
+    length = first2[1] & 0x7F
+    if length == 126:
+        length = int.from_bytes(await reader.readexactly(2), "big")
+    elif length == 127:
+        length = int.from_bytes(await reader.readexactly(8), "big")
+    return await reader.readexactly(length)
+
+
+async def _cdp_send(
+    writer, msg_id: int, method: str, params: Optional[dict] = None, session_id: Optional[str] = None
+) -> None:
+    msg = {"id": msg_id, "method": method, "params": params or {}}
+    if session_id:
+        msg["sessionId"] = session_id  # flattened-protocol routing to an attached target
+    writer.write(_ws_frame(json.dumps(msg).encode()))
+    await writer.drain()
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +240,13 @@ class PlaywrightCliBackend:
         self._log_lines: list = []  # Progress log consumed by BrowserAgent via get_log()
         self._chrome_proc = None  # Per-task Chrome process (browser_launch_chrome mode)
         self._chrome_profile = None  # Its unique --user-data-dir, removed on stop
+        self._pwnfox_task = None  # Background CDP connection tagging requests (see _pwnfox_tag_task)
+        self._video_recording = False  # True between video-start and video-stop
+        self._video_path = None  # Path passed to video-start (video-stop takes no filename)
+        self._last_artifact = None  # Absolute path of the last saved video/screenshot
+        self._last_tabs = None  # tab-list markdown from the last tab action, surfaced to the LLM
+        self._cdp = ""  # CDP http endpoint for this task, when known (attach / per-task launch)
+        self._pinned_target = None  # CDP targetId of the tab the agent is working on (stable across index shifts + navigation)
 
     # ── Session helpers ──────────────────────────────────────────────────────
 
@@ -265,13 +339,21 @@ class PlaywrightCliBackend:
         # forwards to the old instance and exits — so the new CDP port never opens and
         # the launch hangs/flaps. A fresh dir has no lock to collide with.
         self._chrome_profile = tempfile.mkdtemp(prefix=f"a0-chrome-{sid}-")
-        self._chrome_proc = await asyncio.create_subprocess_exec(
+        args = [
             binary,
             f"--remote-debugging-port={port}",
             f"--user-data-dir={self._chrome_profile}",
             "--no-first-run",
             "--no-default-browser-check",
-            url,
+        ]
+        proxy = str(self._plugin_cfg().get("browser_proxy_server") or "").strip()
+        if proxy:
+            args.append(f"--proxy-server={proxy}")
+        if self._cfg_flag("browser_ignore_cert_errors"):
+            args.append("--ignore-certificate-errors")
+        args.append(url)
+        self._chrome_proc = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -287,14 +369,86 @@ class PlaywrightCliBackend:
                 )
                 log.info("PlaywrightCliBackend: launched Chrome (pid %s) at %s",
                          self._chrome_proc.pid, endpoint)
+                if self._cfg_flag("browser_pwnfox_headers"):
+                    self._pwnfox_task = asyncio.create_task(
+                        self._pwnfox_tag_task(endpoint, self._pwnfox_color())
+                    )
                 return endpoint
             except Exception:
                 await asyncio.sleep(0.3)
         self._stop_chrome()
         raise RuntimeError(f"Chrome CDP endpoint not ready at {endpoint} after 15s")
 
+    def _cfg_flag(self, key: str) -> bool:
+        return str(self._plugin_cfg().get(key) or "").strip().lower() in ("true", "1", "yes", "on")
+
+    _PWNFOX_COLORS = ("blue", "turquoise", "green", "yellow", "orange", "red", "pink", "purple")
+
+    def _pwnfox_color(self) -> str:
+        """Header value for X-PwnFox-Color (github.com/yeswehack/PwnFox convention)."""
+        cfg = str(self._plugin_cfg().get("browser_pwnfox_color") or "").strip().lower()
+        if cfg in self._PWNFOX_COLORS:
+            return cfg
+        # ponytail: no fixed color configured — derive a stable one from the window
+        # name so concurrent windows land on different colors in Burp automatically.
+        import hashlib
+        idx = int(hashlib.md5(self.window.encode()).hexdigest(), 16) % len(self._PWNFOX_COLORS)
+        return self._PWNFOX_COLORS[idx]
+
+    async def _pwnfox_tag_task(self, endpoint: str, color: str) -> None:
+        """Keep a browser-level CDP connection open, auto-attaching to every existing
+        and future target (tabs, popups, iframes) and tagging each with X-PwnFox-Color
+        so Burp's proxy history can be filtered/highlighted per window — including
+        tabs opened later via window.open/tab-new, not just the one Chrome opens at
+        launch. Uses a hand-rolled WS client (stdlib only, no new dependency).
+        """
+        import urllib.request
+        try:
+            body = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(f"{endpoint}/json/version", timeout=2).read()
+            )
+            browser_ws = json.loads(body)["webSocketDebuggerUrl"]
+            reader, writer = await _cdp_ws_connect(browser_ws)
+            try:
+                await _cdp_send(
+                    writer, 1, "Target.setAutoAttach",
+                    {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+                )
+                log.info("PlaywrightCliBackend: tagging requests with X-PwnFox-Color=%s", color)
+                next_id = 2
+                while True:
+                    frame = await _ws_read_frame(reader)
+                    try:
+                        msg = json.loads(frame)
+                    except Exception:
+                        continue
+                    if msg.get("method") != "Target.attachedToTarget":
+                        continue
+                    params = msg.get("params", {})
+                    session_id = params.get("sessionId")
+                    target_type = params.get("targetInfo", {}).get("type")
+                    if not session_id or target_type not in ("page", "background_page"):
+                        continue
+                    await _cdp_send(writer, next_id, "Network.enable", {}, session_id)
+                    next_id += 1
+                    await _cdp_send(
+                        writer, next_id, "Network.setExtraHTTPHeaders",
+                        {"headers": {"X-PwnFox-Color": color}}, session_id,
+                    )
+                    next_id += 1
+            finally:
+                writer.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("PlaywrightCliBackend: PwnFox header tagging failed: %s", e)
+
     def _stop_chrome(self) -> None:
         """Terminate the per-task Chrome, if we launched one. Best-effort."""
+        task = self._pwnfox_task
+        self._pwnfox_task = None
+        if task and not task.done():
+            task.cancel()
         proc = self._chrome_proc
         self._chrome_proc = None
         if proc and proc.returncode is None:
@@ -307,6 +461,92 @@ class PlaywrightCliBackend:
         if profile:
             import shutil
             shutil.rmtree(profile, ignore_errors=True)
+
+    # ── Stable tab-identity pinning ───────────────────────────────────────────
+    # The daemon addresses tabs only by positional index, which shifts when the
+    # user closes a tab, and by _currentTab, which silently jumps to a neighbour
+    # if the user closes the agent's active tab. To keep the agent glued to *its*
+    # tab we pin the CDP targetId (a GUID Chrome assigns per tab, constant for the
+    # tab's whole lifetime, unaffected by index shifts or navigation) and re-map
+    # it to the live index each step. Only works when we have an http CDP endpoint
+    # (per-task launch / http attach); a no-op otherwise.
+    # ponytail: matches targetId<->tab-list by URL, so two tabs on the SAME url are
+    # ambiguous (first match wins). Expose targetId in tab-list upstream if it bites.
+
+    _TAB_LINE_RE = re.compile(r"^- (\d+):(\s*\(current\))?\s*\[.*?\]\((.*?)\)", re.M)
+
+    async def _cdp_page_targets(self) -> list:
+        """List of {'id','url'} for every page target, via {endpoint}/json. [] if unavailable."""
+        if not self._cdp.startswith(("http://", "https://")):
+            return []  # ws:// or unknown endpoint — pinning disabled
+        import urllib.request
+        try:
+            body = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(f"{self._cdp}/json", timeout=2).read()
+            )
+            return [
+                {"id": t.get("id"), "url": t.get("url", "")}
+                for t in json.loads(body)
+                if t.get("type") == "page" and t.get("id")
+            ]
+        except Exception as e:
+            log.debug("PlaywrightCliBackend: /json target list failed: %s", e)
+            return []
+
+    async def _pin_current_tab(self, sid: str) -> None:
+        """Record the currently-active tab's targetId as the agent's pinned tab."""
+        targets = await self._cdp_page_targets()
+        if not targets:
+            self._pinned_target = None
+            return
+        try:
+            out = await self._run_cmd([f"-s={sid}", "tab-list"])
+        except Exception:
+            return
+        cur_url = next(
+            (m.group(3) for m in self._TAB_LINE_RE.finditer(out or "") if m.group(2)), None
+        )
+        if cur_url is None:
+            return
+        match = next((t for t in targets if t["url"] == cur_url), None)
+        if match:
+            self._pinned_target = match["id"]
+            log.debug("PlaywrightCliBackend: pinned agent tab %s (%s)", match["id"], cur_url)
+
+    async def _ensure_pinned_tab(self, sid: str) -> str:
+        """Re-select the pinned tab if the user's tab activity moved the daemon off it.
+
+        Returns a short note for the agent's history when something notable happened
+        (its tab was closed, or was restored from under a user switch), else "".
+        """
+        if not self._pinned_target:
+            return ""
+        targets = await self._cdp_page_targets()
+        if not targets:
+            return ""
+        pinned = next((t for t in targets if t["id"] == self._pinned_target), None)
+        if pinned is None:
+            # The agent's working tab was closed (by the user, or a script). Re-pin to
+            # whatever the daemon fell back to so the agent keeps going, and tell it.
+            self._pinned_target = None
+            await self._pin_current_tab(sid)
+            log.info("PlaywrightCliBackend: agent's pinned tab was closed; re-pinned to current")
+            return "Your working tab was closed; now operating on the current tab. Re-check with tab-list."
+        try:
+            out = await self._run_cmd([f"-s={sid}", "tab-list"])
+        except Exception:
+            return ""
+        rows = [(int(m.group(1)), bool(m.group(2)), m.group(3))
+                for m in self._TAB_LINE_RE.finditer(out or "")]
+        cur = next((r for r in rows if r[1]), None)
+        if cur and cur[2] == pinned["url"]:
+            return ""  # already on the pinned tab
+        idx = next((r[0] for r in rows if r[2] == pinned["url"]), None)
+        if idx is None:
+            return ""  # can't locate it in the daemon's list — leave the agent be
+        await self._run_cmd([f"-s={sid}", "tab-select", str(idx)])
+        log.info("PlaywrightCliBackend: restored agent tab (index %s) after user tab switch", idx)
+        return ""
 
     def _is_persistent(self) -> bool:
         """Remote-browser modes keep the browser open across tasks."""
@@ -546,6 +786,135 @@ class PlaywrightCliBackend:
             log.warning("PlaywrightCliBackend.get_screenshot: failed: %s", e)
             return None
 
+    def _artifact_path(self, subdir: str, ext: str) -> str:
+        """Persistent output path for videos/annotated screenshots (never auto-deleted).
+
+        Saves under the Agent Zero chat folder (same place BrowserAgent.get_update
+        writes live screenshots) so files show up in the chat's file browser.
+        Falls back to the system tempdir if the chat helpers aren't reachable
+        (e.g. this backend used outside an Agent Zero context).
+        """
+        fname = f"{subdir}-{self.get_session_id()}-{time.strftime('%Y%m%d-%H%M%S')}.{ext}"
+        try:
+            from helpers import files as a0_files, persist_chat
+            path = a0_files.get_abs_path(
+                persist_chat.get_chat_folder_path(self.agent.context.id),
+                "browser", subdir, fname,
+            )
+            a0_files.make_dirs(path)
+            return path
+        except Exception as e:
+            log.debug("PlaywrightCliBackend._artifact_path: falling back to tempdir: %s", e)
+            return os.path.join(tempfile.gettempdir(), fname)
+
+    async def _resolve_bbox(self, sid: str, ann: dict) -> "tuple | None":
+        """Return (x, y, width, height) in viewport px for an annotation.
+
+        Prefers an element ref (looked up live via `eval` + getBoundingClientRect);
+        falls back to explicit x/y fields (zero-size point) when no ref is given.
+        """
+        ref = ann.get("ref")
+        if ref and _REF_PATTERN.match(str(ref)):
+            try:
+                # Plain object return (no JSON.stringify) — playwright-cli pretty-prints it
+                # as real JSON under "### Result"; stringifying it ourselves would make the
+                # CLI double-encode it (quoted, escaped) instead.
+                out = await self._run_cmd([
+                    f"-s={sid}", "eval",
+                    "el => el.getBoundingClientRect()", str(ref),
+                ])
+                section = out.split("### Result", 1)[-1].split("### Ran Playwright code", 1)[0]
+                match = re.search(r"\{.*\}", section, re.DOTALL)
+                rect = json.loads(match.group(0)) if match else {}
+                return (rect["x"], rect["y"], rect["width"], rect["height"])
+            except Exception as e:
+                log.warning("PlaywrightCliBackend: bbox lookup failed for %s: %s", ref, e)
+                return None
+        x, y = ann.get("x"), ann.get("y")
+        if x is not None and y is not None:
+            try:
+                return (float(x), float(y), 0.0, 0.0)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _draw_arrow(draw, x: float, y: float, w: float, h: float, color: tuple) -> None:
+        """Draw an arrow pointing at the (x,y,w,h) box's center, tail offset diagonally."""
+        import math
+        cx, cy = x + w / 2, y + h / 2
+        start = (cx - 70, cy - 70) if cx > 90 and cy > 90 else (cx + 70, cy + 70)
+        end = (cx, cy)
+        draw.line([start, end], fill=color, width=4)
+        angle = math.atan2(end[1] - start[1], end[0] - start[0])
+        for a in (angle - 0.4, angle + 0.4):
+            draw.line(
+                [end, (end[0] - 16 * math.cos(a), end[1] - 16 * math.sin(a))],
+                fill=color, width=4,
+            )
+
+    async def _annotate_screenshot(self, sid: str, decision: dict) -> None:
+        """Take a screenshot and draw boxes/arrows/text labels over it for repro walkthroughs.
+
+        decision["annotations"]: list of
+          {"ref": "e5", "type": "box"|"arrow"|"text", "text": "Click here"}
+        (or "x"/"y" viewport px instead of "ref" for a free-floating point).
+        Result is saved persistently (unlike the plain `screenshot` action) so the
+        final answer can point the user at it.
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            log.warning("PlaywrightCliBackend: Pillow not installed, cannot annotate screenshot")
+            self._log_lines.append("  ⚠ annotate failed: Pillow not installed")
+            return
+
+        annotations = decision.get("annotations") or []
+        if not annotations:
+            log.warning("PlaywrightCliBackend: annotate action requires an 'annotations' list")
+            return
+
+        raw_path = os.path.join(tempfile.gettempdir(), f"pw-annotate-raw-{sid}.png")
+        await self._run_cmd([f"-s={sid}", "screenshot", f"--filename={raw_path}"])
+        if not os.path.exists(raw_path):
+            return
+
+        img = Image.open(raw_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
+        except Exception:
+            font = ImageFont.load_default()
+        color = (235, 30, 30)
+
+        for ann in annotations[:20]:  # cap — this is a walkthrough aid, not a report generator
+            box = await self._resolve_bbox(sid, ann)
+            if box is None:
+                continue
+            x, y, w, h = box
+            kind = str(ann.get("type") or "box").lower()
+            text = str(ann.get("text") or "")
+            if kind == "arrow":
+                self._draw_arrow(draw, x, y, w, h, color)
+            elif kind != "text":  # "box" (default)
+                draw.rectangle([x, y, x + w, y + h], outline=color, width=3)
+            if text:
+                label_xy = (x, max(0, y - 22))
+                label_w = draw.textlength(text, font=font) + 8
+                draw.rectangle(
+                    [label_xy[0], label_xy[1], label_xy[0] + label_w, label_xy[1] + 20],
+                    fill=color,
+                )
+                draw.text((label_xy[0] + 4, label_xy[1]), text, fill=(255, 255, 255), font=font)
+
+        try:
+            os.unlink(raw_path)
+        except Exception:
+            pass
+        out_path = self._artifact_path("screenshots", "png")
+        img.save(out_path)
+        self._last_artifact = out_path
+        self._log_lines.append(f"  ✓ annotated screenshot saved → {out_path}")
 
     # ── Snapshot helpers ──────────────────────────────────────────────────────
 
@@ -676,7 +1045,17 @@ class PlaywrightCliBackend:
             self._log_lines.append(f"Error opening browser: {str(e)[:120]}")
             return
 
+        # Pin the agent's working tab by CDP targetId so user tab activity can't drift
+        # the agent onto the wrong tab. No-op unless we have an http CDP endpoint.
+        self._cdp = cdp if cdp.startswith(("http://", "https://")) else ""
+        await self._pin_current_tab(sid)
+
         for step in range(self.MAX_STEPS):
+            # Keep the agent on its pinned tab if the user closed/switched tabs underneath.
+            pin_note = await self._ensure_pinned_tab(sid)
+            if pin_note and history:
+                history[-1]["_notice"] = pin_note
+
             # Get structured snapshot with element refs (e1, e2, ...)
             snapshot = await self._get_snapshot(sid)
             truncated = self._truncate_snapshot(snapshot)
@@ -731,7 +1110,22 @@ class PlaywrightCliBackend:
 
             # Execute action
             try:
+                self._last_artifact = None
+                self._last_tabs = None
                 await self._execute_action(sid, decision)
+                if self._last_artifact:
+                    # Surface saved video/annotated-screenshot path in next prompt's
+                    # history so the LLM can cite it when it calls `done`.
+                    history[-1]["_artifact"] = self._last_artifact
+                if self._last_tabs:
+                    # Surface the open-tab list (incl. user-opened tabs) so the LLM can
+                    # see what exists and pick one via tab-select. history is JSON-dumped
+                    # into the next prompt, so this field reaches the model automatically.
+                    history[-1]["_tabs"] = self._last_tabs
+                    # The agent intentionally changed tabs — re-pin so _ensure_pinned_tab
+                    # tracks its new intended tab instead of dragging it back to the old one.
+                    if decision.get("action") in ("tab-new", "tab-select", "tab-close"):
+                        await self._pin_current_tab(sid)
             except RuntimeError as e:
                 log.warning("PlaywrightCliBackend: action failed at step %d: %s", step, e)
                 # Don't abort — let LLM adapt on next snapshot
@@ -860,12 +1254,12 @@ class PlaywrightCliBackend:
 
         elif action == "tab-new":
             if value and any(str(value).startswith(s) for s in _URL_ALLOWED_SCHEMES):
-                await self._run_cmd([f"-s={sid}", "tab-new", str(value)])
+                self._last_tabs = await self._run_cmd([f"-s={sid}", "tab-new", str(value)])
             else:
-                await self._run_cmd([f"-s={sid}", "tab-new"])
+                self._last_tabs = await self._run_cmd([f"-s={sid}", "tab-new"])
 
         elif action == "tab-close":
-            await self._run_cmd([f"-s={sid}", "tab-close"])
+            self._last_tabs = await self._run_cmd([f"-s={sid}", "tab-close"])
 
         elif action == "screenshot":
             snap_path = os.path.join(tempfile.gettempdir(), f"pw-shot-{sid}.png")
@@ -914,11 +1308,14 @@ class PlaywrightCliBackend:
             except (TypeError, ValueError):
                 log.warning("PlaywrightCliBackend: tab-select requires integer value, got '%s'", value)
                 return
-            await self._run_cmd([f"-s={sid}", "tab-select", str(idx)])
+            self._last_tabs = await self._run_cmd([f"-s={sid}", "tab-select", str(idx)])
 
         elif action == "tab-list":
-            # tab-list: returns list of open tabs in stdout (informational, no side effects)
-            await self._run_cmd([f"-s={sid}", "tab-list"])
+            # tab-list: open-tab listing (index, current-marker, title, URL) — captured
+            # into _last_tabs so the loop can feed it back to the LLM. This is the only
+            # way the agent learns about tabs the *user* opened, since _get_snapshot only
+            # captures the current tab. Format: "- 0: (current) [Title](url)"
+            self._last_tabs = await self._run_cmd([f"-s={sid}", "tab-list"])
 
         elif action == "keydown":
             # keydown: value = key name (Shift, Control, Alt, Meta, etc.)
@@ -1005,6 +1402,26 @@ class PlaywrightCliBackend:
                 log.warning("PlaywrightCliBackend: run-code requires JS expression in value")
                 return
             await self._run_cmd([f"-s={sid}", "run-code", str(value)])
+
+        elif action == "video-start":
+            # playwright-cli takes the filename on video-start, not video-stop.
+            out_path = self._artifact_path("videos", "webm")
+            await self._run_cmd([f"-s={sid}", "video-start", out_path])
+            self._video_recording = True
+            self._video_path = out_path
+            self._log_lines.append("  ● recording started")
+
+        elif action == "video-stop":
+            await self._run_cmd([f"-s={sid}", "video-stop"])
+            self._video_recording = False
+            out_path = self._video_path
+            self._video_path = None
+            if out_path and os.path.exists(out_path):
+                self._last_artifact = out_path
+                self._log_lines.append(f"  ■ recording saved → {out_path}")
+
+        elif action == "annotate":
+            await self._annotate_screenshot(sid, decision)
 
         else:
             log.warning("PlaywrightCliBackend: unknown action '%s' — skipping", action)
