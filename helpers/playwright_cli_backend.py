@@ -1022,14 +1022,20 @@ class PlaywrightCliBackend:
             cdp = self._get_cdp_endpoint()
             if reused:
                 pass
-            elif not cdp and self._launch_per_task():
-                # Launch a dedicated Chrome and attach to it via CDP
+            elif not cdp and (self._launch_per_task() or self._cfg_flag("browser_pwnfox_headers")):
+                # Launch a dedicated Chrome and attach to it via CDP. PwnFox tagging
+                # needs a CDP port to attach to, so enabling it forces this path even
+                # when browser_launch_chrome is off (plain `open` exposes no CDP port).
                 cdp = await self._launch_chrome(sid, initial_url)
                 await self._run_cmd([f"-s={sid}", "attach", f"--cdp={cdp}"])
                 self._log_lines.append(f"Launched Chrome at {cdp} → {initial_url}")
             elif cdp:
                 # Attach to an externally-running Chrome
                 await self._run_cmd([f"-s={sid}", "attach", f"--cdp={cdp}"])
+                if self._cfg_flag("browser_pwnfox_headers"):
+                    self._pwnfox_task = asyncio.create_task(
+                        self._pwnfox_tag_task(cdp, self._pwnfox_color())
+                    )
                 if initial_url != "about:blank":
                     await self._run_cmd([f"-s={sid}", "goto", initial_url])
                 self._log_lines.append(f"Attached to Chrome at {cdp} → {initial_url}")

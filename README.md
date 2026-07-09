@@ -89,7 +89,7 @@ Both remote modes are **persistent**: the browser window stays open between task
 
 ### Pentesting through Burp Suite
 
-These options (`browser_launch_chrome: true` mode only) route the launched Chrome through an intercepting proxy for the AI to drive alongside a Burp MCP server:
+These options route Chrome through an intercepting proxy for the AI to drive alongside a Burp MCP server. `browser_proxy_server`/`browser_ignore_cert_errors` apply to `browser_launch_chrome: true` mode; `browser_pwnfox_headers` works in every mode (enabling it forces a dedicated Chrome launch when neither `browser_launch_chrome` nor `browser_cdp_endpoint` is set, since plain playwright `open` exposes no CDP port to tag through):
 
 | Option | Effect |
 |--------|--------|
@@ -98,7 +98,7 @@ These options (`browser_launch_chrome: true` mode only) route the launched Chrom
 | `browser_pwnfox_headers: true` | Tag every request — including tabs/popups opened later — with `X-PwnFox-Color` ([PwnFox](https://github.com/yeswehack/PwnFox) convention) so Burp's proxy history can be filtered/highlighted per window |
 | `browser_pwnfox_color` | Fix the color (`blue`/`turquoise`/`green`/`yellow`/`orange`/`red`/`pink`/`purple`); leave empty to auto-assign one per `window` name, so concurrent windows get distinct colors automatically |
 
-Attaching to an already-running Chrome (`browser_cdp_endpoint`) works too — just launch it yourself with `--proxy-server=...` (and `--ignore-certificate-errors` if needed); PwnFox tagging isn't wired up for that mode.
+Attaching to an already-running Chrome (`browser_cdp_endpoint`) works too — just launch it yourself with `--proxy-server=...` (and `--ignore-certificate-errors` if needed); PwnFox tagging attaches to that endpoint too.
 
 ---
 
