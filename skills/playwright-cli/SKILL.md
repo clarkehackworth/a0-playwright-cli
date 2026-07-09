@@ -1,7 +1,7 @@
 ---
 name: playwright-cli
 description: Use for any task that involves working with a website or web page — including browsing, navigating, reading content, extracting data, filling forms, clicking buttons, logging in, scraping, checking page structure, testing web apps, taking screenshots, or any other browser-based interaction.
-allowed-tools: Bash(playwright-cli:*)
+allowed-tools: Bash(playwright-cli:*), Bash(python:*), Bash(google-chrome:*), Bash(find:*), Bash(mktemp:*)
 ---
 
 # Browser Automation with playwright-cli
@@ -178,6 +178,52 @@ playwright-cli close
 # Delete user data for the default session
 playwright-cli delete-data
 ```
+
+## Remote / proxied browser (pentesting)
+
+When the task needs a browser routed through an intercepting proxy (Burp/ZAP), a
+headed remote Chrome, or PwnFox request tagging, **do not** rely on plain
+`open` — it exposes no proxy/CDP controls. Instead launch Chrome yourself and
+attach to it over CDP, pulling the settings from the plugin config so you honor
+whatever the operator configured.
+
+**1. Read the config** (ships with this plugin at `<plugin_root>/config.py` —
+the plugin dir is two levels up from this skill; locate it if unsure):
+
+```bash
+CFG=$(find / -path '*a0_playwright_cli/config.py' 2>/dev/null | head -1)
+python "$CFG"                          # full JSON
+PROXY=$(python "$CFG" browser_proxy_server)
+CDP=$(python "$CFG" browser_cdp_endpoint)
+```
+
+Relevant keys: `browser_cdp_endpoint`, `browser_proxy_server`,
+`browser_ignore_cert_errors`, `browser_headed`, `browser_pwnfox_headers`,
+`browser_pwnfox_color`.
+
+**2a. If `browser_cdp_endpoint` is set**, Chrome is already running — just attach:
+
+```bash
+playwright-cli attach --cdp="$CDP"
+```
+
+**2b. Otherwise launch Chrome yourself** with args built from config, then attach:
+
+```bash
+PORT=9222
+ARGS="--remote-debugging-port=$PORT --user-data-dir=$(mktemp -d) --no-first-run --no-default-browser-check"
+[ -n "$PROXY" ] && ARGS="$ARGS --proxy-server=$PROXY"
+[ "$(python "$CFG" browser_ignore_cert_errors)" = "True" ] && ARGS="$ARGS --ignore-certificate-errors"
+# PwnFox: load the extension so Burp gets X-PwnFox-Color tags
+# [ "$(python "$CFG" browser_pwnfox_headers)" = "True" ] && ARGS="$ARGS --load-extension=/path/to/pwnfox"
+google-chrome $ARGS about:blank &
+playwright-cli attach --cdp="http://127.0.0.1:$PORT"
+```
+
+Launching Chrome yourself (not `open`) is the only way to control proxy, cert
+handling, extensions, and profile via command-line flags. Add any extra Chrome
+flags the task needs to `ARGS`. Then drive it with the normal commands
+(`goto`, `click`, ...).
 
 ## Snapshots
 

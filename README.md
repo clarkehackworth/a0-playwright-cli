@@ -100,6 +100,35 @@ These options route Chrome through an intercepting proxy for the AI to drive alo
 
 Attaching to an already-running Chrome (`browser_cdp_endpoint`) works too — just launch it yourself with `--proxy-server=...` (and `--ignore-certificate-errors` if needed); PwnFox tagging attaches to that endpoint too.
 
+#### Which field applies to which launch mode
+
+The four Pentesting options do **not** all apply to every browser-launch path. There are four paths (see the table above plus the headless fallback), and each field's scope differs:
+
+| Field | CDP attach (`browser_cdp_endpoint`) | Launch Chrome (`browser_launch_chrome`) | Plain `open` [--headed] | Headless Docker fallback |
+|---|:---:|:---:|:---:|:---:|
+| `browser_proxy_server` | ❌ set on your own Chrome cmdline | ✅ `--proxy-server` | ❌ | ❌ |
+| `browser_ignore_cert_errors` | ❌ set it yourself | ✅ `--ignore-certificate-errors` | ❌ | ❌ |
+| `browser_pwnfox_headers` | ✅ tagger attaches to endpoint | ✅ tagger attaches after launch | ❌ | ❌ |
+| `browser_pwnfox_color` | ✅ (when headers on) | ✅ (when headers on) | ❌ | ❌ |
+
+Two rules to internalize:
+
+1. **Proxy + cert-errors are `browser_launch_chrome`-only.** In CDP-attach mode the plugin never sets Chrome's launch flags (it's your process), so bake `--proxy-server` / `--ignore-certificate-errors` into your own launch command.
+2. **PwnFox spans both remote modes and can rewrite the path.** Enabling `browser_pwnfox_headers` while both remote modes are off *forces* a dedicated Chrome launch — tagging needs a CDP port and plain `open` exposes none.
+
+So **plain `open` and the headless fallback honor none of these fields.** Setting a proxy with both remote modes off does nothing.
+
+#### Letting the AI build the launch command
+
+The agent can drive a proxied/headed Chrome itself (via the **playwright-cli** skill) instead of relying on the config-driven paths above. It reads the effective config with the bundled helper and constructs the Chrome command line — so it honors whatever the operator set without hardcoding:
+
+```bash
+python <plugin_root>/config.py                    # full effective config as JSON
+python <plugin_root>/config.py browser_proxy_server   # one value, for shell use
+```
+
+The skill's "Remote / proxied browser" section has the full launch-and-attach recipe.
+
 ---
 
 ## How It Works

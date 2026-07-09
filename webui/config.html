@@ -149,14 +149,18 @@
     <div class="section">
       <div class="section-title">Pentesting (Burp Suite)</div>
       <div class="section-description">
-        Applies only when <strong>Launch Dedicated Chrome</strong> is on. Routes that Chrome's traffic
-        through an intercepting proxy and tags requests for correlation in Burp's proxy history.
+        Routes browser traffic through an intercepting proxy and tags requests for correlation in
+        Burp's proxy history. <strong>These fields apply only to the remote-browser modes</strong>
+        (see the Remote Browser section) — not to the default in-process browser. Scope differs per
+        field: <em>Proxy Server</em> and <em>Ignore Certificate Errors</em> apply only to
+        <strong>Launch Dedicated Chrome</strong>; <em>PwnFox</em> tagging applies to both
+        <strong>Launch Dedicated Chrome</strong> and <strong>CDP Endpoint</strong> (attach) modes.
       </div>
 
       <div class="field">
         <div class="field-label">
           <div class="field-title">Proxy Server <span style="opacity:0.5;font-weight:400">(optional)</span></div>
-          <div class="field-description">Intercepting proxy address, e.g. Burp's listener.</div>
+          <div class="field-description">Intercepting proxy address, e.g. Burp's listener. <em>Launch Dedicated Chrome mode only</em> — in CDP-attach mode, pass <code>--proxy-server</code> when you start Chrome yourself.</div>
         </div>
         <div class="field-control">
           <input type="text" x-model="config.browser_proxy_server" placeholder="e.g. http://127.0.0.1:8080" />
@@ -166,7 +170,7 @@
       <div class="field">
         <div class="field-label">
           <div class="field-title">Ignore Certificate Errors</div>
-          <div class="field-description">Skip TLS warnings from Burp's CA. Alternative: install Burp's CA as trusted instead.</div>
+          <div class="field-description">Skip TLS warnings from Burp's CA. Alternative: install Burp's CA as trusted instead. <em>Launch Dedicated Chrome mode only</em> — in CDP-attach mode, pass <code>--ignore-certificate-errors</code> yourself.</div>
         </div>
         <div class="field-control">
           <label class="toggle">
@@ -182,7 +186,10 @@
           <div class="field-description">
             Tag every request (including tabs/popups opened later) with an <code>X-PwnFox-Color</code> header
             (<a href="https://github.com/yeswehack/PwnFox" target="_blank">PwnFox</a> convention) so Burp's
-            proxy history can be filtered/highlighted per window.
+            proxy history can be filtered/highlighted per window. Works in <em>both</em> remote modes
+            (Launch Dedicated Chrome and CDP Endpoint attach). If neither remote mode is on, enabling
+            this <strong>forces a dedicated Chrome launch</strong> — plain playwright <code>open</code>
+            exposes no CDP port to tag through.
           </div>
         </div>
         <div class="field-control">
