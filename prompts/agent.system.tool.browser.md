@@ -24,6 +24,14 @@ playwright-cli click e3
 playwright-cli close
 ```
 
+**Remote / proxied browser (pentesting):** to run the browser through an
+intercepting proxy (Burp/ZAP), a headed remote Chrome, or with PwnFox tagging,
+the settings live in the plugin config — never hardcode them. Read them with the
+plugin's config helper (`python <plugin_root>/config.py`), then launch Chrome
+yourself with the matching flags (`--proxy-server`, `--ignore-certificate-errors`,
+`--remote-debugging-port`, ...) and `playwright-cli attach --cdp=`. The
+**playwright-cli** skill has the full recipe under "Remote / proxied browser".
+
 **Parallel windows:** to drive several independent browser windows at once, call
 `browser_agent` with a `window` argument (any short name). Each distinct name gets
 its own persistent window and session; reuse the same name to continue in that window.
