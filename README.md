@@ -1,6 +1,6 @@
 # A0 Playwright CLI
 
-![Version](https://img.shields.io/badge/version-1.2.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Agent Zero](https://img.shields.io/badge/Agent%20Zero-plugin-orange)
+![Version](https://img.shields.io/badge/version-1.4.0-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Agent Zero](https://img.shields.io/badge/Agent%20Zero-plugin-orange)
 
 Microsoft Playwright CLI browser automation plugin for [Agent Zero](https://github.com/frdel/agent-zero). Gives every agent a `browser_agent` tool to navigate, interact with, and extract data from any website using structured DOM snapshots with stable element references.
 
@@ -10,13 +10,15 @@ Microsoft Playwright CLI browser automation plugin for [Agent Zero](https://gith
 
 - 🎭 **Playwright CLI backend** — structured YAML DOM snapshots with stable element refs (`e1`, `e2`, ...)
 - 🤖 **Uses Agent Zero Browser Model** — no separate LLM config needed, inherits your Settings → Agent → Browser Model
-- 🔧 **Auto-skill injection** — the full Playwright CLI skill is injected into the agent system prompt automatically
-- 📋 **30 browser actions** — navigation, interaction, keyboard & mouse, scroll, eval/JS, drag, dialogs, tabs, viewport, and more
+- 🔧 **Bundled Playwright CLI skill** — available to load for hands-on `playwright-cli` control (custom flags, proxy, PwnFox)
+- 📋 **40+ browser actions** — navigation, interaction, keyboard & mouse, scroll, eval/JS, drag, dialogs, tabs, viewport, console logs, cookies/storage, and more
 - 🖥️ **Remote browser control** — attach to a running Chrome over CDP, or launch a dedicated headed Chrome per context; remote browsers stay open across tasks and are reused
-- 🔒 **Security validated** — URL allowlist (http/https only), element ref pattern validation
-- 📱 **Mobile/device emulation** — emulate any device viewport
-- 🕸️ **Network mocking** — intercept and mock HTTP requests
-- 🎬 **DevTools tracing & video** — record sessions for debugging
+- 🌐 **Multi-browser** — Chromium (default), Firefox, WebKit, or MS Edge via the `browser_engine` config (plain `open` mode)
+- 🔒 **Security validated** — URL allowlist (http/https only), element ref pattern validation, CLI flag-injection guards
+- 🍪 **Console & storage access** — read console logs; list/get/set/delete cookies, localStorage, and sessionStorage
+- 🕸️ **Network interception** — intercept requests and reply with mock status/body
+- 💾 **Storage state** — save cookies + localStorage to a file and reload it to skip re-login
+- 🎬 **Session video** — record browser sessions to `.webm` for debugging
 - 🚀 **One-click initialization** — installs playwright-cli and Chromium automatically
 
 ---
@@ -82,6 +84,7 @@ Two plugin config options (in `default_config.yaml` / plugin settings) control w
 | `browser_headed: true` | Each browser task opens a visible Chrome window (requires a display; not for Docker) |
 | `browser_launch_chrome: true` | Launch a dedicated Chrome — own profile, own CDP port — and attach to it. Concurrent agent contexts each get their own window. |
 | `browser_cdp_endpoint` | Attach to an already-running Chrome instead of launching one. Start Chrome with `google-chrome --remote-debugging-port=9222`, then set `http://127.0.0.1:9222`. |
+| `browser_docker_headless: true` | Opt in to the headless Docker fallback. Installs a Chrome wrapper at `/opt/google/chrome/chrome` that forces `--no-sandbox --headless=new`. **Off by default** — required for the plain `open` path inside the Agent Zero container (no display, no sandbox), since it modifies the container filesystem. Ignored in headed / CDP modes. |
 
 Precedence: `browser_cdp_endpoint` > `browser_launch_chrome` > `browser_headed`.
 
@@ -262,24 +265,25 @@ The `browser_agent` tool is available to all agents when the plugin is enabled:
 playwright_cli/
 ├── plugin.yaml                          # Plugin manifest
 ├── initialize.py                        # Auto-installer for playwright-cli + Chromium
+├── hooks.py                             # Plugin lifecycle hook (install/update)
+├── config.py                            # Dumps effective config as JSON for the agent
+├── execute.py                           # 'Initialize' button entrypoint (installs deps)
 ├── default_config.yaml                  # Config (browser model + remote browser modes)
 ├── deploy.sh                            # Push the plugin to the agent-zero container
+├── api/
+│   └── providers.py                     # Browser-model provider list for the settings UI
 ├── tools/
 │   └── browser_agent.py                 # browser_agent tool
 ├── helpers/
 │   ├── playwright_cli_backend.py        # Core agentic browser loop
 │   └── playwright.py                    # Chromium binary discovery
-├── extensions/
-│   └── python/
-│       ├── agent_init/
-│       │   └── _20_browser_plugin_config.py   # Plugin init hook
-│       └── system_prompt/
-│           └── _16_playwright_cli_skill_prompt.py  # Skill auto-injection
 ├── prompts/
 │   ├── browser_agent.system.md          # Internal browser LLM instructions
 │   └── agent.system.tool.browser.md    # Parent agent tool description
 ├── webui/
 │   └── config.html                      # Settings info card
+├── tests/
+│   └── test_tab_pinning.py              # Tab-identity pinning tests
 └── skills/
     └── playwright-cli/                  # Bundled Playwright CLI skill
         ├── SKILL.md
@@ -311,6 +315,7 @@ MIT — Copyright (c) 2026 Emichi d.o.o. See [LICENSE](LICENSE) for details.
 - `browser_launch_chrome` — launch a dedicated Chrome (own profile + CDP port), attach to it, and keep it open across tasks
 - `browser_cdp_endpoint` — attach to an already-running Chrome via CDP
 - Remote modes (CDP / launched) are **persistent**: the browser stays open between tasks and the session is reused, so page and login state carry over. Precedence: `browser_cdp_endpoint` > `browser_launch_chrome` > `browser_headed`.
+- `browser_docker_headless` — opt in to the headless Docker Chrome wrapper (`--no-sandbox --headless=new`). Now **off by default**; the container filesystem is only modified when explicitly enabled.
 - Added `deploy.sh` to push the plugin to the `agent-zero` container.
 
 ### v1.2.0 — 2026-03-25

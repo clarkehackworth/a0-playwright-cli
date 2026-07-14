@@ -1,7 +1,8 @@
 """PlaywrightCliBackend — Microsoft Playwright CLI browser automation backend.
 
-Provides structured DOM snapshots with stable element refs (e1/e2...), mobile emulation,
-network mocking, and DevTools tracing via playwright-cli shell commands.
+Provides structured DOM snapshots with stable element refs (e1/e2...), console/cookie/
+storage access, network interception (route), and session video via playwright-cli
+shell commands.
 
 Reuses existing Playwright browser binaries from the ms-playwright cache.
 Binary path: 3x dirname from ensure_playwright_binary() = PLAYWRIGHT_BROWSERS_PATH.
@@ -241,10 +242,12 @@ class PlaywrightCliBackend:
         self._chrome_proc = None  # Per-task Chrome process (browser_launch_chrome mode)
         self._chrome_profile = None  # Its unique --user-data-dir, removed on stop
         self._pwnfox_task = None  # Background CDP connection tagging requests (see _pwnfox_tag_task)
+        self._pwnfox_ready = asyncio.Event()  # Set once a page target has been tagged
         self._video_recording = False  # True between video-start and video-stop
         self._video_path = None  # Path passed to video-start (video-stop takes no filename)
         self._last_artifact = None  # Absolute path of the last saved video/screenshot
         self._last_tabs = None  # tab-list markdown from the last tab action, surfaced to the LLM
+        self._last_output = None  # stdout from the last read action (console/cookie/storage), surfaced to the LLM
         self._cdp = ""  # CDP http endpoint for this task, when known (attach / per-task launch)
         self._pinned_target = None  # CDP targetId of the tab the agent is working on (stable across index shifts + navigation)
 
@@ -302,6 +305,20 @@ class PlaywrightCliBackend:
             return ""
         return ep
 
+    _BROWSER_ENGINES = ("chromium", "chrome", "firefox", "webkit", "msedge")
+
+    def _browser_engine(self) -> str:
+        """Configured Playwright engine for the plain `open` path, or '' for default.
+
+        Only applies when playwright-cli launches its own browser (`open`). The
+        CDP attach / launch-Chrome paths are Chrome-only, so this is ignored there.
+        """
+        eng = str(self._plugin_cfg().get("browser_engine") or "").strip().lower()
+        if eng and eng not in self._BROWSER_ENGINES:
+            log.warning("PlaywrightCliBackend: ignoring invalid browser_engine '%s'", eng[:40])
+            return ""
+        return eng
+
     def _launch_per_task(self) -> bool:
         """True when config asks for a dedicated Chrome per task (attached via CDP)."""
         return str(self._plugin_cfg().get("browser_launch_chrome") or "").strip().lower() in (
@@ -346,12 +363,21 @@ class PlaywrightCliBackend:
             "--no-first-run",
             "--no-default-browser-check",
         ]
+        if self._cfg_flag("browser_headless"):
+            # Remote/headless server: no X display to open into. --headless=new
+            # still exposes the CDP port so attach works.
+            args.append("--headless=new")
         proxy = str(self._plugin_cfg().get("browser_proxy_server") or "").strip()
         if proxy:
             args.append(f"--proxy-server={proxy}")
         if self._cfg_flag("browser_ignore_cert_errors"):
             args.append("--ignore-certificate-errors")
-        args.append(url)
+        tagging = self._cfg_flag("browser_pwnfox_headers")
+        # When tagging, launch blank and let the caller navigate *after* the header
+        # is installed — Chrome fires a launch-URL's top-level request before the CDP
+        # port even opens, so passing the real URL here would leave the session's
+        # first (and most important) page load untagged in Burp.
+        args.append("about:blank" if tagging else url)
         self._chrome_proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.DEVNULL,
@@ -369,10 +395,17 @@ class PlaywrightCliBackend:
                 )
                 log.info("PlaywrightCliBackend: launched Chrome (pid %s) at %s",
                          self._chrome_proc.pid, endpoint)
-                if self._cfg_flag("browser_pwnfox_headers"):
+                if tagging:
                     self._pwnfox_task = asyncio.create_task(
                         self._pwnfox_tag_task(endpoint, self._pwnfox_color())
                     )
+                    # Block until the blank tab is tagged so the caller's navigation
+                    # to the real URL carries the header. Best-effort — proceed anyway
+                    # if tagging is slow rather than hang the whole browser session.
+                    try:
+                        await asyncio.wait_for(self._pwnfox_ready.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        log.warning("PlaywrightCliBackend: PwnFox tagging not ready after 5s")
                 return endpoint
             except Exception:
                 await asyncio.sleep(0.3)
@@ -436,6 +469,12 @@ class PlaywrightCliBackend:
                         {"headers": {"X-PwnFox-Color": color}}, session_id,
                     )
                     next_id += 1
+                    self._pwnfox_ready.set()  # a page target is now tagged
+                    # ponytail: a tab *born* at a real URL (site window.open('url'),
+                    # redirect-spawned tab) fires its top-level request before this
+                    # header lands, so that one request stays untagged; subresources
+                    # onward are tagged. Agent-driven navigation (blank→goto) is fine.
+                    # Switch to Fetch-based interception if untagged spawns bite.
             finally:
                 writer.close()
         except asyncio.CancelledError:
@@ -684,9 +723,14 @@ class PlaywrightCliBackend:
         Returns PlaywrightCliTask wrapping the asyncio task.
         """
         # Ensure Chrome wrapper exists at /opt/google/chrome/chrome (restart-proof).
-        # Skip for headed/CDP modes — the wrapper hardcodes --headless=new and only
-        # exists for headless Docker environments.
-        if not self._get_cdp_endpoint() and not self._is_headed():
+        # Opt-in only (browser_docker_headless): the wrapper mutates the container
+        # filesystem and hardcodes --no-sandbox --headless=new, so it must be
+        # explicitly enabled. Skip for headed/CDP modes regardless.
+        if (
+            self._cfg_flag("browser_docker_headless")
+            and not self._get_cdp_endpoint()
+            and not self._is_headed()
+        ):
             self._ensure_chrome_wrapper()
         # Pre-flight check: binary must exist
         if not self.validate_binary():
@@ -1028,6 +1072,10 @@ class PlaywrightCliBackend:
                 # when browser_launch_chrome is off (plain `open` exposes no CDP port).
                 cdp = await self._launch_chrome(sid, initial_url)
                 await self._run_cmd([f"-s={sid}", "attach", f"--cdp={cdp}"])
+                # In tagging mode Chrome launched blank; navigate now so the top-level
+                # request goes through the already-tagged tab (see _launch_chrome).
+                if self._cfg_flag("browser_pwnfox_headers") and initial_url != "about:blank":
+                    await self._run_cmd([f"-s={sid}", "goto", initial_url])
                 self._log_lines.append(f"Launched Chrome at {cdp} → {initial_url}")
             elif cdp:
                 # Attach to an externally-running Chrome
@@ -1036,11 +1084,20 @@ class PlaywrightCliBackend:
                     self._pwnfox_task = asyncio.create_task(
                         self._pwnfox_tag_task(cdp, self._pwnfox_color())
                     )
+                    # Wait for tagging before navigating so the goto's top-level
+                    # request carries the header (best-effort, see _launch_chrome).
+                    try:
+                        await asyncio.wait_for(self._pwnfox_ready.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        log.warning("PlaywrightCliBackend: PwnFox tagging not ready after 5s")
                 if initial_url != "about:blank":
                     await self._run_cmd([f"-s={sid}", "goto", initial_url])
                 self._log_lines.append(f"Attached to Chrome at {cdp} → {initial_url}")
             else:
                 open_args = [f"-s={sid}", "open", initial_url]
+                engine = self._browser_engine()
+                if engine:
+                    open_args.append(f"--browser={engine}")
                 if self._is_headed():
                     open_args.append("--headed")
                 await self._run_cmd(open_args)
@@ -1118,6 +1175,7 @@ class PlaywrightCliBackend:
             try:
                 self._last_artifact = None
                 self._last_tabs = None
+                self._last_output = None
                 await self._execute_action(sid, decision)
                 if self._last_artifact:
                     # Surface saved video/annotated-screenshot path in next prompt's
@@ -1132,6 +1190,10 @@ class PlaywrightCliBackend:
                     # tracks its new intended tab instead of dragging it back to the old one.
                     if decision.get("action") in ("tab-new", "tab-select", "tab-close"):
                         await self._pin_current_tab(sid)
+                if self._last_output is not None:
+                    # Surface read-action stdout (console log, cookies, storage) so the
+                    # LLM sees the values it asked for on the next prompt.
+                    history[-1]["_output"] = self._last_output[:4000]
             except RuntimeError as e:
                 log.warning("PlaywrightCliBackend: action failed at step %d: %s", step, e)
                 # Don't abort — let LLM adapt on next snapshot
@@ -1429,8 +1491,98 @@ class PlaywrightCliBackend:
         elif action == "annotate":
             await self._annotate_screenshot(sid, decision)
 
+        elif action == "console":
+            # Read browser console logs. Optional value = level filter (log/info/warning/error).
+            args = [f"-s={sid}", "console"]
+            level = str(value).strip().lower()
+            if level in ("log", "info", "warning", "error", "debug"):
+                args.append(level)
+            self._last_output = await self._run_cmd(args)
+
+        elif action in ("cookie", "localstorage", "sessionstorage"):
+            await self._storage_action(sid, action, decision)
+
+        elif action == "route":
+            # Intercept requests matching a URL glob and fulfil with a canned
+            # status/body. value = glob pattern; status/body = the mock response.
+            pattern = str(value)
+            if not pattern or pattern.startswith("-"):
+                log.warning("PlaywrightCliBackend: route requires a URL pattern in value")
+                return
+            args = [f"-s={sid}", "route", pattern]
+            status = decision.get("status")
+            if status is not None:
+                try:
+                    args.append(f"--status={int(status)}")
+                except (TypeError, ValueError):
+                    log.warning("PlaywrightCliBackend: route status must be an integer, got '%s'", status)
+                    return
+            body = decision.get("body")
+            if body is not None:
+                args.append(f"--body={body}")
+            await self._run_cmd(args)
+
+        elif action == "route-list":
+            self._last_output = await self._run_cmd([f"-s={sid}", "route-list"])
+
+        elif action == "unroute":
+            # value = pattern to remove; empty clears all routes.
+            pattern = str(value)
+            args = [f"-s={sid}", "unroute"]
+            if pattern:
+                if pattern.startswith("-"):
+                    log.warning("PlaywrightCliBackend: unroute pattern may not start with '-'")
+                    return
+                args.append(pattern)
+            await self._run_cmd(args)
+
+        elif action == "state-save":
+            # Persist storage state (cookies + localStorage) to a returnable file.
+            out_path = self._artifact_path("state", "json")
+            await self._run_cmd([f"-s={sid}", "state-save", out_path])
+            self._last_artifact = out_path
+
+        elif action == "state-load":
+            # value = path to a state file previously saved with state-save.
+            path = str(value)
+            if not path or path.startswith("-"):
+                log.warning("PlaywrightCliBackend: state-load requires a file path in value")
+                return
+            await self._run_cmd([f"-s={sid}", "state-load", path])
+
         else:
             log.warning("PlaywrightCliBackend: unknown action '%s' — skipping", action)
+
+    async def _storage_action(self, sid: str, kind: str, decision: dict) -> None:
+        """Dispatch cookie / localStorage / sessionStorage ops to playwright-cli.
+
+        decision.op ∈ list|get|set|delete|clear. `name`/`value` are the key & value.
+        Read ops (list/get) surface their output to the LLM via _last_output.
+
+        ponytail: rejects args starting with '-' to block CLI flag injection; skips
+        the --domain/--httpOnly/--secure cookie flags — add them if a task needs them.
+        """
+        op = str(decision.get("op") or "list").strip().lower()
+        name = str(decision.get("name") or decision.get("ref") or "")
+        value = str(decision.get("value") or "")
+        if op not in ("list", "get", "set", "delete", "clear"):
+            log.warning("PlaywrightCliBackend: %s: bad op '%s'", kind, op)
+            return
+        if op in ("get", "set", "delete") and (not name or name.startswith("-")):
+            log.warning("PlaywrightCliBackend: %s-%s: missing/invalid name '%s'", kind, op, name)
+            return
+        if op == "set" and value.startswith("-"):
+            log.warning("PlaywrightCliBackend: %s-set: value may not start with '-'", kind)
+            return
+        cmd = f"{kind}-{op}"
+        args = [f"-s={sid}", cmd]
+        if op in ("get", "delete"):
+            args.append(name)
+        elif op == "set":
+            args += [name, value]
+        out = await self._run_cmd(args)
+        if op in ("list", "get"):
+            self._last_output = out
 
     # ── Prompt builder ────────────────────────────────────────────────────────
 

@@ -77,6 +77,50 @@ Respond with a **single JSON object only** — no prose, no markdown fences, no 
 snapshot element, or `"x"`/`"y"` (viewport px) instead of `ref` for a free-floating point. `box` outlines the
 element, `arrow` points at its center, `text` places a label with no shape. Up to 20 annotations per call.
 
+### Browser State (output surfaces on that step's history as `_output`)
+
+| Action | Required fields | Description |
+|--------|----------------|-------------|
+| `console` | `value` (optional level) | Read browser console logs. Optional `value`: `log`/`info`/`warning`/`error`/`debug` to filter |
+| `cookie` | `op`, `name`/`value` per op | Cookies. `op`: `list` (all), `get` (`name`), `set` (`name`+`value`), `delete` (`name`), `clear` (all) |
+| `localstorage` | `op`, `name`/`value` per op | localStorage. Same `op` shape as `cookie` |
+| `sessionstorage` | `op`, `name`/`value` per op | sessionStorage. Same `op` shape as `cookie` |
+
+Examples:
+```
+{"action": "console", "value": "error"}
+{"action": "cookie", "op": "get", "name": "session_id"}
+{"action": "cookie", "op": "set", "name": "theme", "value": "dark"}
+{"action": "localstorage", "op": "list"}
+{"action": "sessionstorage", "op": "clear"}
+```
+`list`/`get` results appear as `_output` on that step in history — read them there.
+`name` and `value` must not start with `-`.
+
+### Network Interception
+
+| Action | Required fields | Description |
+|--------|----------------|-------------|
+| `route` | `value` (URL glob), `status` and/or `body` | Intercept matching requests and reply with a mock. `status` (int) and/or `body` (response string) |
+| `route-list` | — | List active routes (surfaces as `_output`) |
+| `unroute` | `value` (optional glob) | Remove a route by pattern; empty `value` clears all routes |
+
+```
+{"action": "route", "value": "**/*.jpg", "status": 404}
+{"action": "route", "value": "https://api.example.com/**", "body": "{\"mock\": true}"}
+{"action": "unroute", "value": "**/*.jpg"}
+```
+
+### Storage State (save/restore login sessions)
+
+| Action | Required fields | Description |
+|--------|----------------|-------------|
+| `state-save` | — | Save cookies + localStorage to a file; path returns as `_artifact` on that step |
+| `state-load` | `value` (file path) | Restore a state file saved earlier with `state-save` |
+
+Use `state-save` after logging in, then `state-load` (with the `_artifact` path) in a
+later task to skip re-authentication. Cite the saved path in your `done` value.
+
 ### Dialogs
 
 | Action | Required fields | Description |

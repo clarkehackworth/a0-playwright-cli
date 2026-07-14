@@ -1,41 +1,34 @@
 ### browser_agent (playwright-cli):
 
-> **Important:** For all browser and web tasks, load and use the **playwright-cli** skill via `code_execution_tool` (terminal runtime) — do NOT call `browser_agent` directly.
+Use `browser_agent` for any task involving a real browser: navigating sites,
+clicking, filling forms, logging in, scraping content, taking screenshots.
+Give it a natural-language `message` describing the goal; it runs its own
+snapshot → act → repeat loop and returns the result. Set `reset="true"` to
+start a fresh session, or omit it to continue the existing one.
 
-The `playwright-cli` skill is available in your skill list. Load it first:
 ```
-skills_tool:load playwright-cli
-```
-Then use `playwright-cli` commands via `code_execution_tool` terminal to interact with the browser.
-
-**Use playwright-cli for:**
-- Navigating websites and web pages
-- Clicking, filling forms, submitting
-- Extracting content, data scraping
-- Taking screenshots
-- Login and authenticated sessions
-- Any task involving a real browser
-
-**Example workflow:**
-```bash
-playwright-cli open https://example.com
-playwright-cli snapshot
-playwright-cli click e3
-playwright-cli close
+browser_agent  message="open https://example.com, log in as test@x.com, and read the dashboard total"
 ```
 
-**Remote / proxied browser (pentesting):** to run the browser through an
-intercepting proxy (Burp/ZAP), a headed remote Chrome, or with PwnFox tagging,
-the settings live in the plugin config — never hardcode them. Read them with the
-plugin's config helper (`python <plugin_root>/config.py`), then launch Chrome
-yourself with the matching flags (`--proxy-server`, `--ignore-certificate-errors`,
-`--remote-debugging-port`, ...) and `playwright-cli attach --cdp=`. The
-**playwright-cli** skill has the full recipe under "Remote / proxied browser".
-
-**Parallel windows:** to drive several independent browser windows at once, call
-`browser_agent` with a `window` argument (any short name). Each distinct name gets
-its own persistent window and session; reuse the same name to continue in that window.
+**Parallel windows:** to drive several independent browser windows at once,
+pass a `window` argument (any short name). Each distinct name gets its own
+persistent window and session; reuse the same name to continue in that window.
 ```
 browser_agent  window="research"  message="open https://news.example.com and summarize"
 browser_agent  window="checkout"  message="open https://shop.example.com and add item X to cart"
 ```
+Note: separate windows are truly independent only when the plugin launches a
+dedicated Chrome per window (`browser_launch_chrome`). In `browser_cdp_endpoint`
+mode every window attaches to the same Chrome and shares its tabs.
+
+**Advanced — driving playwright-cli by hand:** for fine-grained control (custom
+Chrome flags, an intercepting proxy for pentesting, PwnFox tagging) you can load
+the **playwright-cli** skill and run its commands directly via `code_execution_tool`:
+```
+skills_tool:load playwright-cli
+```
+The plugin's proxy/cert/PwnFox settings live in its config — never hardcode them.
+Read them with `python <plugin_root>/config.py`, launch Chrome with the matching
+flags (`--proxy-server`, `--ignore-certificate-errors`, `--remote-debugging-port`),
+then `playwright-cli attach --cdp=`. The skill has the full recipe under
+"Remote / proxied browser".

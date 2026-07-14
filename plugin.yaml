@@ -11,4 +11,4 @@ per_project_config: false
 settings_sections:
 - agent
 title: A0 Playwright CLI
-version: 1.3.0
+version: 1.4.0

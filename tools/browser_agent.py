@@ -153,7 +153,7 @@ class BrowserAgent(Tool):
         return result
 
     async def prepare_state(self, reset=False, window="default"):
-        """Initialize PlaywrightCliBackend — the sole backend since v2.1.0.
+        """Initialize PlaywrightCliBackend — the sole browser backend.
 
         Each distinct `window` name gets its own backend instance (own browser
         window + playwright-cli session), so one task can drive several in parallel.
