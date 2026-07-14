@@ -21,14 +21,13 @@ Note: separate windows are truly independent only when the plugin launches a
 dedicated Chrome per window (`browser_launch_chrome`). In `browser_cdp_endpoint`
 mode every window attaches to the same Chrome and shares its tabs.
 
-**Advanced — driving playwright-cli by hand:** for fine-grained control (custom
-Chrome flags, an intercepting proxy for pentesting, PwnFox tagging) you can load
-the **playwright-cli** skill and run its commands directly via `code_execution_tool`:
-```
-skills_tool:load playwright-cli
-```
-The plugin's proxy/cert/PwnFox settings live in its config — never hardcode them.
-Read them with `python <plugin_root>/config.py`, launch Chrome with the matching
-flags (`--proxy-server`, `--ignore-certificate-errors`, `--remote-debugging-port`),
-then `playwright-cli attach --cdp=`. The skill has the full recipe under
-"Remote / proxied browser".
+**Always act via `browser_agent`.** To browse — including CDP-attach, proxied,
+or pentest sessions — call `browser_agent`. It reads the plugin config (CDP
+endpoint, proxy, cert, PwnFox) and attaches automatically; you do not launch or
+configure Chrome yourself. **Never** load the `playwright-cli` skill to carry out
+a browsing task — the skill is a passive reference, so loading it does nothing and
+leaves the task unstarted.
+
+**Advanced (rare, operator-only):** the `playwright-cli` skill exists solely for a
+human operator debugging launch flags by hand. Do not load it in response to a
+user's browse request — use `browser_agent`.
