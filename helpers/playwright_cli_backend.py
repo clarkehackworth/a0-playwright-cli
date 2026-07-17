@@ -712,6 +712,20 @@ class PlaywrightCliBackend:
         sid = self.get_session_id()
         env = self._make_env()
         import subprocess
+        # Finalize an in-progress recording before close, else the .webm is discarded.
+        if self._video_recording:
+            try:
+                subprocess.run(
+                    ["playwright-cli", f"-s={sid}", "video-stop"],
+                    env=env, capture_output=True, timeout=10,
+                )
+                if self._video_path and os.path.exists(self._video_path):
+                    self._last_artifact = self._video_path
+                    self._log_lines.append(f"  ■ recording saved → {self._video_path}")
+            except Exception:
+                pass
+            self._video_recording = False
+            self._video_path = None
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(
@@ -1140,6 +1154,20 @@ class PlaywrightCliBackend:
         else:
             self._result = "Max steps reached without completing task."
             self._log_lines.append(f"Max steps ({self.MAX_STEPS}) reached — task incomplete")
+
+        # Finalize any in-progress recording before the browser goes away — closing
+        # while video-start is still pending discards the file (playwright only flushes
+        # the .webm on video-stop).
+        if self._video_recording:
+            try:
+                await self._run_cmd([f"-s={sid}", "video-stop"])
+                if self._video_path and os.path.exists(self._video_path):
+                    self._last_artifact = self._video_path
+                    self._log_lines.append(f"  ■ recording saved → {self._video_path}")
+            except Exception:
+                pass
+            self._video_recording = False
+            self._video_path = None
 
         # Clean up session — persistent (remote) browsers stay open for the next task
         if self._is_persistent():

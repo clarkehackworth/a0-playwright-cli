@@ -2,6 +2,8 @@
 
 Capture browser automation sessions as video for debugging, documentation, or verification. Produces WebM (VP8/VP9 codec).
 
+Recording attaches to the already-open browser via CDP screencast — no restart or fresh session needed. Pages already open when you call `video-start` are captured from that point forward (not retroactively).
+
 ## Basic Recording
 
 ```bash
