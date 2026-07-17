@@ -6,9 +6,14 @@ Recording attaches to the already-open browser via CDP screencast — no restart
 
 ## Basic Recording
 
+The filename is passed to `video-start`, not `video-stop`. The `.webm` is only
+flushed to disk on `video-stop` — if the browser/session closes while a recording
+is still open, the file is discarded. `video-stop` does **not** close the browser,
+so no restart is needed to finalize a recording.
+
 ```bash
-# Start recording
-playwright-cli video-start
+# Start recording (filename goes here)
+playwright-cli video-start demo.webm
 
 # Perform actions
 playwright-cli open https://example.com
@@ -16,8 +21,8 @@ playwright-cli snapshot
 playwright-cli click e1
 playwright-cli fill e2 "test input"
 
-# Stop and save
-playwright-cli video-stop demo.webm
+# Stop and flush the .webm (takes no filename)
+playwright-cli video-stop
 ```
 
 ## Best Practices
@@ -25,9 +30,9 @@ playwright-cli video-stop demo.webm
 ### 1. Use Descriptive Filenames
 
 ```bash
-# Include context in filename
-playwright-cli video-stop recordings/login-flow-2024-01-15.webm
-playwright-cli video-stop recordings/checkout-test-run-42.webm
+# Include context in filename (on video-start)
+playwright-cli video-start recordings/login-flow-2024-01-15.webm
+playwright-cli video-start recordings/checkout-test-run-42.webm
 ```
 
 ## Tracing vs Video
